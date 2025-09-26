@@ -58,6 +58,11 @@ const samples = [
   },
 ];
 
+function toPgTextArrayLiteral(arr) {
+  const esc = (s) => '"' + String(s).replace(/"/g, '\\"') + '"';
+  return `{${arr.map(esc).join(",")}}`;
+}
+
 async function main() {
   // Avoid duplicates by URL
   for (const a of samples) {
@@ -74,13 +79,56 @@ async function main() {
       console.log("Exists:", a.url);
       continue;
     }
-    const payload = { ...a, tags: a.tags ? JSON.stringify(a.tags) : null };
-    const { error: insError } = await admin.from("articles").insert(payload);
+    // Insert first without tags for maximum compatibility
+    const base = { title: a.title, url: a.url, summary: a.summary ?? null };
+    const { data: inserted, error: insError } = await admin
+      .from("articles")
+      .insert(base)
+      .select("id")
+      .single();
     if (insError) {
       console.error("Insert error:", insError.message);
       process.exit(1);
     }
     console.log("Inserted:", a.title);
+
+    // Try to set tags if supported
+    if (a.tags && a.tags.length) {
+      // First, try JSON/JSONB style
+      let updated = false;
+      let lastErr = null;
+      try {
+        const { error } = await admin
+          .from("articles")
+          .update({ tags: a.tags })
+          .eq("id", inserted.id);
+        if (!error) {
+          updated = true;
+        } else {
+          lastErr = error;
+        }
+      } catch (e) {
+        lastErr = e;
+      }
+      if (!updated) {
+        // Fall back to Postgres text[] array literal
+        const literal = toPgTextArrayLiteral(a.tags);
+        const { error } = await admin
+          .from("articles")
+          .update({ tags: literal })
+          .eq("id", inserted.id);
+        if (error) {
+          console.warn(
+            `Warning: could not set tags for ${a.title}. Column type may differ. Skipping. Detail:`,
+            (lastErr && lastErr.message) || error.message
+          );
+        } else {
+          console.log("Set tags for:", a.title);
+        }
+      } else {
+        console.log("Set tags for:", a.title);
+      }
+    }
   }
 }
 
@@ -88,4 +136,3 @@ main().catch((e) => {
   console.error(e);
   process.exit(1);
 });
-

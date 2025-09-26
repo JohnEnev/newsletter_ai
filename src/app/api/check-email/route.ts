@@ -23,17 +23,23 @@ export async function GET(request: Request) {
   });
 
   // Query auth schema for user by email using service role
-  const { data, error } = await admin
-    .schema("auth")
-    .from("users")
-    .select("id")
-    .eq("email", email)
-    .maybeSingle();
+  try {
+    // Use GoTrue Admin API (service role) to look up the user
+    const { data } = await admin.auth.admin.listUsers({ page: 1, perPage: 2000 });
+    const found = (data?.users || []).find(
+      (u) => u.email && u.email.toLowerCase() === email.toLowerCase()
+    );
+    if (!found) return NextResponse.json({ ok: true, exists: false });
 
-  if (error) {
-    return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
+    // Check unsubscribe status in user_prefs
+    const { data: prefs } = await admin
+      .from("user_prefs")
+      .select("unsubscribed")
+      .eq("user_id", found.id)
+      .maybeSingle();
+
+    return NextResponse.json({ ok: true, exists: true, unsubscribed: Boolean(prefs?.unsubscribed) });
+  } catch (e: any) {
+    return NextResponse.json({ ok: false, error: e?.message || "Admin lookup failed" }, { status: 500 });
   }
-
-  return NextResponse.json({ ok: true, exists: Boolean(data) });
 }
-

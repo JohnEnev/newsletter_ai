@@ -20,6 +20,7 @@ export function InlineSignup() {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [exists, setExists] = useState<boolean | null>(null);
+  const [unsubscribed, setUnsubscribed] = useState<boolean>(false);
   const [checking, setChecking] = useState(false);
 
   const emailValid = useMemo(() => isValidEmail(email), [email]);
@@ -39,6 +40,7 @@ export function InlineSignup() {
         if (!res.ok) throw new Error("Failed to check email");
         const body = await res.json();
         setExists(Boolean(body?.exists));
+        setUnsubscribed(Boolean(body?.unsubscribed));
       } catch {
         // ignore check errors; keep UX simple
       } finally {
@@ -121,7 +123,9 @@ export function InlineSignup() {
           {checking
             ? "Checking…"
             : exists
-            ? "Already subscribed — we’ll email you a login link to update preferences."
+            ? unsubscribed
+              ? "Account found — we’ll email you a login link to resubscribe or update preferences."
+              : "Account found — we’ll email you a login link to update preferences."
             : "We’ll send a magic link to confirm your email."}
         </p>
       )}
@@ -132,11 +136,7 @@ export function InlineSignup() {
 
       {showPrefs && (
         <div className="space-y-3 animate-fadeIn">
-          {exists && (
-            <p className="text-sm text-muted-foreground">
-              Already subscribed — we’ll email you a login link to update preferences.
-            </p>
-          )}
+          {/* Additional fields only; hint is shown above to avoid duplication */}
           <div className="space-y-1.5">
             <Label htmlFor="interests">Interests</Label>
             <Textarea

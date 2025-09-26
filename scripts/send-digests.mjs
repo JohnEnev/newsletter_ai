@@ -43,42 +43,55 @@ function esc(s) {
   return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
 function usage(msg) {
   if (msg) console.error("Error:", msg);
-  console.log(`\nUsage:\n  node scripts/generate-digests.mjs [--out ./digests] [--limit N] [--email you@example.com | --user-id UUID] [--days 7] [--alt]\n\nNotes:\n- Reads .env.local for SUPABASE keys, UNSUBSCRIBE_SECRET(_ALT), APP_BASE_URL.\n- Produces per-user HTML files with survey/manage/unsubscribe links.\n`);
+  console.log(`\nUsage:\n  node scripts/send-digests.mjs [--email you@example.com | --user-id UUID | --limit 50] [--days 7] [--alt] [--include-unsubscribed] [--dry-run]\n\nNotes:\n- Requires RESEND_API_KEY, EMAIL_FROM, EMAIL_SUBJECT, APP_BASE_URL, UNSUBSCRIBE_SECRET(_ALT), NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY.\n- Sends per-user HTML emails via Resend.\n`);
   process.exit(msg ? 1 : 0);
 }
 
 async function main() {
   loadDotEnvLocal();
   const args = process.argv.slice(2);
-  let outDir = path.resolve(__dirname, "..", "digests");
-  let limit = 0;
   let email = null;
   let userId = null;
+  let limit = 50;
   let days = 7;
   let useAlt = false;
+  let includeUnsub = false;
+  let dryRun = false;
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
-    if (a === "--out") outDir = path.resolve(process.cwd(), args[++i]);
-    else if (a === "--limit") limit = Number(args[++i]);
-    else if (a === "--email") email = args[++i];
+    if (a === "--email") email = args[++i];
     else if (a === "--user-id") userId = args[++i];
+    else if (a === "--limit") limit = Number(args[++i]);
     else if (a === "--days") days = Number(args[++i]);
     else if (a === "--alt") useAlt = true;
+    else if (a === "--include-unsubscribed") includeUnsub = true;
+    else if (a === "--dry-run") dryRun = true;
     else if (a === "-h" || a === "--help") usage();
     else usage(`Unknown arg: ${a}`);
   }
 
+  const resendApiKey = process.env.RESEND_API_KEY;
+  const fromEnv = process.env.EMAIL_FROM || "Newsletter AI <onboarding@resend.dev>";
+  const from = fromEnv;
+  const fromValid = /.+<[^<>@\s]+@[^<>@\s]+\.[^<>@\s]+>/.test(from) || /^[^<>@\s]+@[^<>@\s]+\.[^<>@\s]+$/.test(from);
+  const subject = process.env.EMAIL_SUBJECT || "Your Newsletter";
   const base = process.env.APP_BASE_URL || "http://localhost:3000";
   const signer = useAlt ? (process.env.UNSUBSCRIBE_SECRET_ALT || "") : (process.env.UNSUBSCRIBE_SECRET || "");
-  if (!signer) usage(useAlt ? "UNSUBSCRIBE_SECRET_ALT not set" : "UNSUBSCRIBE_SECRET not set");
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
   if (!supabaseUrl || !serviceRoleKey) usage("Missing NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY");
+  if (!signer) usage(useAlt ? "UNSUBSCRIBE_SECRET_ALT not set" : "UNSUBSCRIBE_SECRET not set");
+  if (!resendApiKey && !dryRun) usage("RESEND_API_KEY not set (or pass --dry-run)");
+  if (!fromValid) usage("EMAIL_FROM invalid. Use 'you@example.com' or 'Name <you@example.com>' (e.g., 'Newsletter AI <onboarding@resend.dev>')");
+
   const admin = createClient(supabaseUrl, serviceRoleKey, { auth: { autoRefreshToken: false, persistSession: false } });
 
-  // Resolve user selection
+  // Select users
   let users = [];
   try {
     if (userId || email) {
@@ -88,7 +101,7 @@ async function main() {
       if (email) list = list.filter((u) => u.email && u.email.toLowerCase() === email.toLowerCase());
       users = list.map((u) => ({ id: u.id, email: u.email }));
     } else {
-      const perPage = limit && limit > 0 ? limit : 100;
+      const perPage = limit && limit > 0 ? limit : 50;
       const { data } = await admin.auth.admin.listUsers({ page: 1, perPage });
       users = (data?.users || []).map((u) => ({ id: u.id, email: u.email }));
     }
@@ -96,15 +109,13 @@ async function main() {
     usage(`Supabase Admin listUsers error: ${e.message || e}`);
   }
 
-  // Get recent articles (shared across users)
+  // Articles
   const { data: articles, error: artErr } = await admin
     .from("articles")
     .select("id, title, url, summary")
     .order("created_at", { ascending: false })
     .limit(5);
   if (artErr) usage(`Articles error: ${artErr.message}`);
-
-  if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
 
   const exp = Math.floor(Date.now() / 1000) + days * 86400;
   const newToken = (uid) => signPayload({ user_id: uid, exp, n: randomBytes(16).toString("base64url") }, signer);
@@ -115,6 +126,11 @@ async function main() {
       .select("interests, timeline, unsubscribed")
       .eq("user_id", u.id)
       .maybeSingle();
+
+    if (prefs?.unsubscribed && !includeUnsub) {
+      console.log(`Skipping unsubscribed: ${u.email}`);
+      continue;
+    }
 
     const manageUrl = `${base}/manage?token=${encodeURIComponent(newToken(u.id))}`;
     const unsubUrl = `${base}/unsubscribe?token=${encodeURIComponent(newToken(u.id))}`;
@@ -170,10 +186,30 @@ async function main() {
   </body>
  </html>`;
 
-    const name = `${u.id}.html`;
-    const outPath = path.join(outDir, name);
-    fs.writeFileSync(outPath, html, "utf-8");
-    console.log(`Wrote ${outPath} (${u.email})`);
+    if (dryRun) {
+      console.log(`[DRY] Would send to ${u.email}`);
+      continue;
+    }
+
+    const res = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${resendApiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ from, to: u.email, subject, html }),
+    });
+    if (!res.ok) {
+      const txt = await res.text();
+      console.error(`Send failed for ${u.email}:`, res.status, txt);
+      if (res.status === 422 && /Invalid `from` field/i.test(txt)) {
+        console.error("Hint: Set EMAIL_FROM to a verified sender on Resend, or use 'onboarding@resend.dev' (e.g., 'Newsletter AI <onboarding@resend.dev>').");
+      }
+    } else {
+      console.log(`Sent to ${u.email}`);
+    }
+    // gentle pacing
+    await sleep(250);
   }
 }
 

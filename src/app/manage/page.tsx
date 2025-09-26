@@ -10,6 +10,7 @@ type PageProps = {
 export default async function ManagePage({ searchParams }: PageProps) {
   const token = (searchParams?.token as string | undefined) ?? "";
   const okParam = (searchParams?.ok as string | undefined) ?? "";
+  const resubParam = (searchParams?.resub as string | undefined) ?? "";
 
   const secret = process.env.UNSUBSCRIBE_SECRET;
   const secretAlt = process.env.UNSUBSCRIBE_SECRET_ALT;
@@ -73,7 +74,8 @@ export default async function ManagePage({ searchParams }: PageProps) {
     const token = String(formData.get("token") || "");
     const interests = String(formData.get("interests") || "");
     const timeline = String(formData.get("timeline") || "");
-    const unsub = String(formData.get("unsubscribed") || "false") === "true";
+    const forceResub = String(formData.get("forceResubscribe") || "") === "1";
+    const unsub = forceResub ? false : (String(formData.get("unsubscribed") || "false") === "true");
 
     const secret = process.env.UNSUBSCRIBE_SECRET!;
     const secretAlt = process.env.UNSUBSCRIBE_SECRET_ALT;
@@ -103,7 +105,7 @@ export default async function ManagePage({ searchParams }: PageProps) {
       .select()
       .single();
 
-    redirect(`/manage?token=${encodeURIComponent(token)}&ok=1`);
+    redirect(`/manage?token=${encodeURIComponent(token)}&ok=1${forceResub ? "&resub=1" : ""}`);
   }
 
   return (
@@ -111,11 +113,14 @@ export default async function ManagePage({ searchParams }: PageProps) {
       <h1 className="text-2xl font-semibold">Manage Preferences</h1>
       {okParam && (
         <p className={`mt-2 text-sm ${okParam === "1" ? "text-muted-foreground" : "text-destructive"}`}>
-          {okParam === "1" ? "Preferences saved." : "Failed to save preferences."}
+          {okParam === "1" ? (resubParam === "1" ? "Thanks for resubscribing. Preferences saved." : "Preferences saved.") : "Failed to save preferences."}
         </p>
       )}
       <form action={updatePrefs} className="mt-6 space-y-4">
         <input type="hidden" name="token" value={token} />
+        {initialUnsub && (
+          <input type="hidden" name="forceResubscribe" value="1" />
+        )}
         <div className="space-y-1.5">
           <label htmlFor="interests" className="text-sm font-medium">Interests</label>
           <textarea
@@ -138,55 +143,60 @@ export default async function ManagePage({ searchParams }: PageProps) {
             className="flex min-h-[60px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
           />
         </div>
-        <div className="space-y-1.5">
-          <label className="text-sm font-medium">Subscription</label>
-          <input type="hidden" name="unsubscribed" value={initialUnsub ? "true" : "false"} />
-          <div className="flex items-center gap-3 text-sm">
-            <button
-              formAction={async (formData) => {
-                "use server";
-                // Toggle unsubscribe flag and save immediately
-                const token = String(formData.get("token") || "");
-                const secret = process.env.UNSUBSCRIBE_SECRET!;
-                const secretAlt = process.env.UNSUBSCRIBE_SECRET_ALT;
-                const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-                const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-                const verify = verifyTokenWithSecrets(token, [secret!, secretAlt!].filter(Boolean));
-                if (!verify.ok) {
-                  redirect(`/manage?token=${encodeURIComponent(token)}&ok=0`);
-                }
-                const { user_id } = (verify as any).payload;
-                const nonce = getPayloadNonce((verify as any).payload);
-                const admin = createClient(supabaseUrl, serviceRoleKey, {
-                  auth: { autoRefreshToken: false, persistSession: false },
-                });
-                if (nonce) {
-                  const { data: seen } = await admin.from("used_nonces").select("nonce").eq("nonce", nonce).maybeSingle();
-                  if (seen) redirect(`/manage?token=${encodeURIComponent(token)}&ok=0`);
-                  await admin.from("used_nonces").insert({ nonce });
-                }
-                await admin
-                  .from("user_prefs")
-                  .upsert({ user_id, unsubscribed: !initialUnsub })
-                  .select()
-                  .single();
-                redirect(`/manage?token=${encodeURIComponent(token)}&ok=1`);
-              }}
-              className="inline-flex items-center rounded-md border border-input bg-background px-3 py-1.5"
-            >
-              {initialUnsub ? "Resubscribe" : "Unsubscribe"}
-            </button>
-            <span className="text-muted-foreground">
-              Status: {initialUnsub ? "Unsubscribed" : "Subscribed"}
-            </span>
+        {initialUnsub ? (
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium">Subscription</label>
+            <div className="text-sm text-muted-foreground">Status: Unsubscribed</div>
           </div>
-        </div>
+        ) : (
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium">Subscription</label>
+            <input type="hidden" name="unsubscribed" value="false" />
+            <div className="flex items-center gap-3 text-sm">
+              <button
+                formAction={async (formData) => {
+                  "use server";
+                  // Toggle unsubscribe flag and save immediately
+                  const token = String(formData.get("token") || "");
+                  const secret = process.env.UNSUBSCRIBE_SECRET!;
+                  const secretAlt = process.env.UNSUBSCRIBE_SECRET_ALT;
+                  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+                  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+                  const verify = verifyTokenWithSecrets(token, [secret!, secretAlt!].filter(Boolean));
+                  if (!verify.ok) {
+                    redirect(`/manage?token=${encodeURIComponent(token)}&ok=0`);
+                  }
+                  const { user_id } = (verify as any).payload;
+                  const nonce = getPayloadNonce((verify as any).payload);
+                  const admin = createClient(supabaseUrl, serviceRoleKey, {
+                    auth: { autoRefreshToken: false, persistSession: false },
+                  });
+                  if (nonce) {
+                    const { data: seen } = await admin.from("used_nonces").select("nonce").eq("nonce", nonce).maybeSingle();
+                    if (seen) redirect(`/manage?token=${encodeURIComponent(token)}&ok=0`);
+                    await admin.from("used_nonces").insert({ nonce });
+                  }
+                  await admin
+                    .from("user_prefs")
+                    .upsert({ user_id, unsubscribed: true })
+                    .select()
+                    .single();
+                  redirect(`/manage?token=${encodeURIComponent(token)}&ok=1`);
+                }}
+                className="inline-flex items-center rounded-md border border-input bg-background px-3 py-1.5"
+              >
+                Unsubscribe
+              </button>
+              <span className="text-muted-foreground">Status: Subscribed</span>
+            </div>
+          </div>
+        )}
         <div>
           <button
             type="submit"
             className="inline-flex items-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground"
           >
-            Save preferences
+            {initialUnsub ? "Save and resubscribe" : "Save preferences"}
           </button>
         </div>
       </form>

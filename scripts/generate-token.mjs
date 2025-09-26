@@ -71,15 +71,16 @@ async function main() {
     const admin = createClient(supabaseUrl, serviceRoleKey, {
       auth: { autoRefreshToken: false, persistSession: false },
     });
-    const { data, error } = await admin
-      .schema("auth")
-      .from("users")
-      .select("id")
-      .eq("email", email)
-      .maybeSingle();
-    if (error) usage(`Supabase error: ${error.message}`);
-    if (!data) usage(`No auth user found for email: ${email}`);
-    userId = data.id;
+    try {
+      const { data } = await admin.auth.admin.listUsers({ page: 1, perPage: 2000 });
+      const found = (data?.users || []).find(
+        (u) => u.email && u.email.toLowerCase() === email.toLowerCase()
+      );
+      if (!found) usage(`No auth user found for email: ${email}`);
+      userId = found.id;
+    } catch (e) {
+      usage(`Supabase Admin listUsers error: ${e.message || e}`);
+    }
   }
 
   const exp = Math.floor(Date.now() / 1000) + days * 86400 + hours * 3600;

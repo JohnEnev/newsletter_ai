@@ -118,6 +118,21 @@ Generate digest files (batch)
   node scripts/generate-digests.mjs --out ./digests --limit 50
   ```
 
+Send digests via Resend (batch)
+- Set in `.env.local`: `RESEND_API_KEY`, `EMAIL_FROM`, `EMAIL_SUBJECT`, `APP_BASE_URL`, `UNSUBSCRIBE_SECRET` (and optionally ALT), Supabase keys.
+- Script: `node scripts/send-digests.mjs [--limit 50] [--email you@example.com | --user-id UUID] [--days 7] [--alt] [--include-unsubscribed] [--dry-run]`
+- Examples:
+  ```bash
+  # Dry run first
+  node scripts/send-digests.mjs --limit 5 --dry-run
+
+  # Send to a single user by email
+  node scripts/send-digests.mjs --email you@example.com
+
+  # Send to recent 50 users, skipping unsubscribed
+  node scripts/send-digests.mjs --limit 50
+  ```
+
 Used/expired link UX
 - Friendly page at `/link/used` for consumed or expired tokens.
 - Survey GET redirects there when a `redirect` was provided and the link was already used.

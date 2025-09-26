@@ -31,15 +31,16 @@ export async function GET(request: Request) {
     return NextResponse.json({ ok: false, error: "Provide user_id or email" }, { status: 400 });
   }
   if (!userId && email) {
-    const { data, error } = await admin
-      .schema("auth")
-      .from("users")
-      .select("id")
-      .eq("email", email)
-      .maybeSingle();
-    if (error) return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
-    if (!data) return NextResponse.json({ ok: false, error: "User not found" }, { status: 404 });
-    userId = data.id;
+    try {
+      const { data } = await admin.auth.admin.listUsers({ page: 1, perPage: 200 });
+      const found = (data?.users || []).find(
+        (u) => u.email && u.email.toLowerCase() === email.toLowerCase()
+      );
+      if (!found) return NextResponse.json({ ok: false, error: "User not found" }, { status: 404 });
+      userId = found.id;
+    } catch (e: any) {
+      return NextResponse.json({ ok: false, error: e?.message || "Admin listUsers failed" }, { status: 500 });
+    }
   }
 
   const { data: prefs, error: prefsErr } = await admin
