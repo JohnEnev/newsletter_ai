@@ -1,26 +1,42 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { supabase } from "@/lib/supabaseClient";
 
+type StatusState =
+  | { state: "working"; message: string }
+  | { state: "success"; message: string }
+  | { state: "error"; message: string };
+
+const emailOtpTypes = [
+  "magiclink",
+  "recovery",
+  "signup",
+  "email_change",
+  "invitation",
+] as const;
+type EmailOtpType = (typeof emailOtpTypes)[number];
+
+function deriveErrorMessage(error: unknown, fallback: string) {
+  if (error instanceof Error) return error.message || fallback;
+  if (typeof error === "string") return error || fallback;
+  return fallback;
+}
+
 export default function AuthCallbackPage() {
-  const [status, setStatus] = useState<
-    | { state: "working"; message: string }
-    | { state: "success"; message: string }
-    | { state: "error"; message: string }
-  >({ state: "working", message: "Signing you in…" });
+  const [status, setStatus] = useState<StatusState>({
+    state: "working",
+    message: "Signing you in…",
+  });
 
   useEffect(() => {
     const run = async () => {
       try {
-        // 1) Handle both possible link shapes:
-        //    - code + code_verifier (PKCE) → exchangeCodeForSession
-        //    - token_hash + type (magiclink/recovery/etc.) → verifyOtp
-        //    - access_token + refresh_token in URL hash → setSession
         const url = new URL(window.location.href);
         const code = url.searchParams.get("code");
         const tokenHash = url.searchParams.get("token_hash");
-        const type = (url.searchParams.get("type") || "").toLowerCase();
+        const typeParam = (url.searchParams.get("type") || "").toLowerCase();
         const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
         const accessToken = hashParams.get("access_token");
         const refreshToken = hashParams.get("refresh_token");
@@ -31,13 +47,13 @@ export default function AuthCallbackPage() {
           );
           if (exchangeError) throw exchangeError;
         } else if (tokenHash) {
-          // Map known types to supabase-js values; default to 'magiclink'
-          const known = ["magiclink", "recovery", "signup", "email_change", "invitation"] as const;
-          const t = (known as readonly string[]).includes(type) ? (type as any) : ("magiclink" as const);
+          const mappedType: EmailOtpType = emailOtpTypes.includes(typeParam as EmailOtpType)
+            ? (typeParam as EmailOtpType)
+            : "magiclink";
           const { error: verifyError } = await supabase.auth.verifyOtp({
             token_hash: tokenHash,
-            type: t,
-          } as any);
+            type: mappedType,
+          });
           if (verifyError) throw verifyError;
         } else if (accessToken && refreshToken) {
           const { error: setErr } = await supabase.auth.setSession({
@@ -45,13 +61,11 @@ export default function AuthCallbackPage() {
             refresh_token: refreshToken,
           });
           if (setErr) throw setErr;
-          // Clean up hash in URL to avoid reprocessing on refresh
           history.replaceState(null, "", url.pathname + url.search);
         } else {
           throw new Error("Invalid auth callback URL: missing code or token_hash");
         }
 
-        // 2) Get the user
         const {
           data: { user },
           error: userError,
@@ -61,21 +75,23 @@ export default function AuthCallbackPage() {
 
         setStatus({ state: "working", message: "Saving your preferences…" });
 
-        // 3) Read locally-stashed prefs
         const raw = localStorage.getItem("pendingSignupPrefs");
         let interests = "";
         let timeline = "";
-        try {
-          if (raw) {
-            const parsed = JSON.parse(raw);
-            interests = parsed?.interests ?? "";
-            timeline = parsed?.timeline ?? "";
+        if (raw) {
+          try {
+            const parsed = JSON.parse(raw) as Record<string, unknown>;
+            if (typeof parsed.interests === "string") {
+              interests = parsed.interests;
+            }
+            if (typeof parsed.timeline === "string") {
+              timeline = parsed.timeline;
+            }
+          } catch {
+            // ignore parse errors
           }
-        } catch {
-          // ignore parse errors
         }
 
-        // 4) Persist to RLS-protected table
         const { error: upsertError } = await supabase
           .from("user_prefs")
           .upsert({ user_id: user.id, interests, timeline })
@@ -83,19 +99,21 @@ export default function AuthCallbackPage() {
           .single();
         if (upsertError) throw upsertError;
 
-        // cleanup local storage
         localStorage.removeItem("pendingSignupPrefs");
 
         setStatus({ state: "success", message: "You're all set! Redirecting…" });
-        // Nudge to settings so users can edit further
         setTimeout(() => {
           window.location.href = "/settings";
         }, 800);
-      } catch (err: any) {
-        const msg = String(err?.message || "Something went wrong during sign-in");
-        const hint = msg.toLowerCase().includes("row-level security") || msg.toLowerCase().includes("permission") || msg.includes("403")
-          ? " Hint: ensure supabase/schema.sql is applied and RLS policies exist for user_prefs."
-          : "";
+      } catch (error) {
+        const msg = deriveErrorMessage(error, "Something went wrong during sign-in");
+        const lower = msg.toLowerCase();
+        const hint =
+          lower.includes("row-level security") ||
+          lower.includes("permission") ||
+          msg.includes("403")
+            ? " Hint: ensure supabase/schema.sql is applied and RLS policies exist for user_prefs."
+            : "";
         setStatus({
           state: "error",
           message: msg + hint,
@@ -110,20 +128,20 @@ export default function AuthCallbackPage() {
       <h1 className="text-2xl font-semibold">Authentication</h1>
       <p className="mt-2 text-sm text-muted-foreground">{status.message}</p>
       {status.state === "success" && (
-        <a
+        <Link
           href="/"
           className="mt-6 inline-flex items-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground"
         >
           Go to home
-        </a>
+        </Link>
       )}
       {status.state === "error" && (
-        <a
+        <Link
           href="/"
           className="mt-6 inline-flex items-center rounded-md border border-input bg-background px-4 py-2 text-sm font-medium"
         >
           Try again
-        </a>
+        </Link>
       )}
     </main>
   );

@@ -1,6 +1,15 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
+type AdminUser = {
+  email?: string | null;
+  id: string;
+};
+
+type LookupResult = {
+  users?: AdminUser[];
+};
+
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const email = searchParams.get("email");
@@ -22,16 +31,16 @@ export async function GET(request: Request) {
     auth: { autoRefreshToken: false, persistSession: false },
   });
 
-  // Query auth schema for user by email using service role
   try {
-    // Use GoTrue Admin API (service role) to look up the user
-    const { data } = await admin.auth.admin.listUsers({ page: 1, perPage: 2000 });
-    const found = (data?.users || []).find(
-      (u) => u.email && u.email.toLowerCase() === email.toLowerCase()
-    );
-    if (!found) return NextResponse.json({ ok: true, exists: false });
+    const { data } = (await admin.auth.admin.listUsers({ page: 1, perPage: 2000 })) as LookupResult;
+    const found = (data?.users || [])
+      .filter((candidate): candidate is AdminUser => Boolean(candidate?.id))
+      .find((candidate) => candidate.email && candidate.email.toLowerCase() === email.toLowerCase());
 
-    // Check unsubscribe status in user_prefs
+    if (!found) {
+      return NextResponse.json({ ok: true, exists: false });
+    }
+
     const { data: prefs } = await admin
       .from("user_prefs")
       .select("unsubscribed")
@@ -39,7 +48,8 @@ export async function GET(request: Request) {
       .maybeSingle();
 
     return NextResponse.json({ ok: true, exists: true, unsubscribed: Boolean(prefs?.unsubscribed) });
-  } catch (e: any) {
-    return NextResponse.json({ ok: false, error: e?.message || "Admin lookup failed" }, { status: 500 });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Admin lookup failed";
+    return NextResponse.json({ ok: false, error: message }, { status: 500 });
   }
 }

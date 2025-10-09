@@ -8,9 +8,19 @@ import { Button } from "@/components/ui/button";
 import { supabase } from "@/lib/supabaseClient";
 
 function isValidEmail(email: string) {
-  // Simple, practical email check
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
+
+function getErrorMessage(error: unknown, fallback: string) {
+  if (error instanceof Error) return error.message || fallback;
+  if (typeof error === "string") return error || fallback;
+  return fallback;
+}
+
+type CheckEmailResponse = {
+  exists?: boolean;
+  unsubscribed?: boolean;
+};
 
 export function InlineSignup() {
   const [email, setEmail] = useState("");
@@ -20,13 +30,12 @@ export function InlineSignup() {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [exists, setExists] = useState<boolean | null>(null);
-  const [unsubscribed, setUnsubscribed] = useState<boolean>(false);
+  const [unsubscribed, setUnsubscribed] = useState(false);
   const [checking, setChecking] = useState(false);
 
   const emailValid = useMemo(() => isValidEmail(email), [email]);
   const showPrefs = emailValid && !submitted;
 
-  // Check if the email already has an account
   useEffect(() => {
     let active = true;
     async function check() {
@@ -38,7 +47,7 @@ export function InlineSignup() {
         const res = await fetch(`/api/check-email?email=${encodeURIComponent(email)}`);
         if (!active) return;
         if (!res.ok) throw new Error("Failed to check email");
-        const body = await res.json();
+        const body = (await res.json()) as CheckEmailResponse;
         setExists(Boolean(body?.exists));
         setUnsubscribed(Boolean(body?.unsubscribed));
       } catch {
@@ -59,7 +68,6 @@ export function InlineSignup() {
     setError(null);
     setSending(true);
     try {
-      // Stash prefs locally; we’ll read and save them on callback after auth.
       const payload = { email, interests, timeline, ts: Date.now() };
       localStorage.setItem("pendingSignupPrefs", JSON.stringify(payload));
 
@@ -70,13 +78,11 @@ export function InlineSignup() {
       });
       if (error) throw error;
       setSubmitted(true);
-    } catch (err: any) {
+    } catch (err) {
       if (process.env.NODE_ENV !== "production") {
-        // eslint-disable-next-line no-console
-        console.error("signInWithOtp error:", err?.message || err);
+        console.error("signInWithOtp error:", err);
       }
-      const raw = String(err?.message || "Failed to send magic link");
-      // Friendlier mapping for common cases
+      const raw = getErrorMessage(err, "Failed to send magic link");
       let friendly = raw;
       if (/invalid/i.test(raw)) {
         friendly = exists
@@ -130,13 +136,10 @@ export function InlineSignup() {
         </p>
       )}
 
-      {error && (
-        <p className="text-sm text-destructive">{error}</p>
-      )}
+      {error && <p className="text-sm text-destructive">{error}</p>}
 
       {showPrefs && (
         <div className="space-y-3 animate-fadeIn">
-          {/* Additional fields only; hint is shown above to avoid duplication */}
           <div className="space-y-1.5">
             <Label htmlFor="interests">Interests</Label>
             <Textarea

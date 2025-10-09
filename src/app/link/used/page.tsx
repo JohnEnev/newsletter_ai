@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 export default function LinkUsedPage() {
   return (
     <main className="mx-auto flex min-h-dvh max-w-md flex-col items-center justify-center px-4 text-center">
@@ -7,20 +9,19 @@ export default function LinkUsedPage() {
         use the email in your latest newsletter or request a new one.
       </p>
       <div className="mt-6 flex items-center gap-3">
-        <a
+        <Link
           href="/"
           className="inline-flex items-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground"
         >
           Back to home
-        </a>
-        <a
+        </Link>
+        <Link
           href="/settings"
           className="inline-flex items-center rounded-md border border-input bg-background px-4 py-2 text-sm font-medium"
         >
           Open settings
-        </a>
+        </Link>
       </div>
     </main>
   );
 }
-

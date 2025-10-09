@@ -1,10 +1,38 @@
+import { randomBytes } from "crypto";
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { signPayload } from "@/lib/tokens";
-import { randomBytes } from "crypto";
+import { signPayload, type TokenPayload } from "@/lib/tokens";
+
+type AdminUser = {
+  email?: string | null;
+  id: string;
+};
+
+type LookupResult = {
+  users?: AdminUser[];
+};
+
+type ArticleRow = {
+  id: string;
+  title: string;
+  url: string;
+  summary?: string | null;
+};
+
+type PrefsRow = {
+  interests?: string | null;
+  timeline?: string | null;
+  unsubscribed?: boolean | null;
+};
 
 function htmlesc(s: string) {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function getErrorMessage(error: unknown, fallback: string) {
+  if (error instanceof Error) return error.message || fallback;
+  if (typeof error === "string") return error || fallback;
+  return fallback;
 }
 
 export async function GET(request: Request) {
@@ -32,33 +60,41 @@ export async function GET(request: Request) {
   }
   if (!userId && email) {
     try {
-      const { data } = await admin.auth.admin.listUsers({ page: 1, perPage: 200 });
-      const found = (data?.users || []).find(
-        (u) => u.email && u.email.toLowerCase() === email.toLowerCase()
-      );
-      if (!found) return NextResponse.json({ ok: false, error: "User not found" }, { status: 404 });
+      const { data } = (await admin.auth.admin.listUsers({ page: 1, perPage: 200 })) as LookupResult;
+      const found = (data?.users || [])
+        .filter((candidate): candidate is AdminUser => Boolean(candidate?.id))
+        .find((candidate) => candidate.email && candidate.email.toLowerCase() === email.toLowerCase());
+      if (!found) {
+        return NextResponse.json({ ok: false, error: "User not found" }, { status: 404 });
+      }
       userId = found.id;
-    } catch (e: any) {
-      return NextResponse.json({ ok: false, error: e?.message || "Admin listUsers failed" }, { status: 500 });
+    } catch (error) {
+      const message = getErrorMessage(error, "Admin listUsers failed");
+      return NextResponse.json({ ok: false, error: message }, { status: 500 });
     }
   }
 
   const { data: prefs, error: prefsErr } = await admin
     .from("user_prefs")
-    .select("interests, timeline, unsubscribed")
+    .select<PrefsRow>("interests, timeline, unsubscribed")
     .eq("user_id", userId)
     .maybeSingle();
-  if (prefsErr) return NextResponse.json({ ok: false, error: prefsErr.message }, { status: 500 });
+  if (prefsErr) {
+    return NextResponse.json({ ok: false, error: prefsErr.message }, { status: 500 });
+  }
 
   const { data: articles, error: artErr } = await admin
     .from("articles")
-    .select("id, title, url, summary")
+    .select<ArticleRow>("id, title, url, summary")
     .order("created_at", { ascending: false })
     .limit(5);
-  if (artErr) return NextResponse.json({ ok: false, error: artErr.message }, { status: 500 });
+  if (artErr) {
+    return NextResponse.json({ ok: false, error: artErr.message }, { status: 500 });
+  }
 
-  const exp = Math.floor(Date.now() / 1000) + 7 * 24 * 3600; // 7 days
-  const newToken = () => signPayload({ user_id: userId, exp, n: randomBytes(16).toString("base64url") }, signer);
+  const exp = Math.floor(Date.now() / 1000) + 7 * 24 * 3600;
+  const newToken = () =>
+    signPayload<TokenPayload>({ user_id: userId, exp, n: randomBytes(16).toString("base64url") }, signer);
   const origin = process.env.APP_BASE_URL || "http://localhost:3000";
 
   const manageUrl = `${origin}/manage?token=${encodeURIComponent(newToken())}`;

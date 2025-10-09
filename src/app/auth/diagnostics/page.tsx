@@ -13,6 +13,12 @@ function Flag({ label, value }: { label: string; value: boolean | string }) {
   );
 }
 
+function describeError(error: unknown, fallback: string) {
+  if (error instanceof Error) return error.message || fallback;
+  if (typeof error === "string") return error || fallback;
+  return fallback;
+}
+
 export default async function DiagnosticsPage() {
   const h = await headers();
   const host = h.get("x-forwarded-host") || h.get("host") || "localhost:3000";
@@ -41,8 +47,11 @@ export default async function DiagnosticsPage() {
       const { error } = await admin.from("articles").select("id", { head: true, count: "exact" });
       if (error) throw error;
       serviceRoleOk = { ok: true, message: "Connected to Supabase (service role)" };
-    } catch (e: any) {
-      serviceRoleOk = { ok: false, message: e?.message || "Failed to query with service role" };
+    } catch (error) {
+      serviceRoleOk = {
+        ok: false,
+        message: describeError(error, "Failed to query with service role"),
+      };
     }
   }
 
@@ -95,4 +104,3 @@ export default async function DiagnosticsPage() {
     </main>
   );
 }
-

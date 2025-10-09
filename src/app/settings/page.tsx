@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { supabase } from "@/lib/supabaseClient";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
@@ -12,6 +13,18 @@ type LoadState =
   | { state: "authed" }
   | { state: "anon" }
   | { state: "error"; message: string };
+
+type PrefsRow = {
+  interests?: string | null;
+  timeline?: string | null;
+  unsubscribed?: boolean | null;
+};
+
+function getErrorMessage(error: unknown, fallback: string) {
+  if (error instanceof Error) return error.message || fallback;
+  if (typeof error === "string") return error || fallback;
+  return fallback;
+}
 
 export default function SettingsPage() {
   const [status, setStatus] = useState<LoadState>({ state: "loading" });
@@ -34,10 +47,9 @@ export default function SettingsPage() {
           return;
         }
 
-        // Load existing prefs (if any)
         const { data, error } = await supabase
           .from("user_prefs")
-          .select("interests, timeline, unsubscribed")
+          .select<PrefsRow>("interests, timeline, unsubscribed")
           .eq("user_id", user.id)
           .maybeSingle();
         if (error) throw error;
@@ -46,8 +58,8 @@ export default function SettingsPage() {
         setTimeline(data?.timeline ?? "");
         setUnsubscribed(Boolean(data?.unsubscribed));
         setStatus({ state: "authed" });
-      } catch (err: any) {
-        setStatus({ state: "error", message: err?.message ?? "Failed to load" });
+      } catch (error) {
+        setStatus({ state: "error", message: getErrorMessage(error, "Failed to load") });
       }
     };
     run();
@@ -72,8 +84,8 @@ export default function SettingsPage() {
         .single();
       if (error) throw error;
       setSaveMsg("Preferences saved");
-    } catch (err: any) {
-      setSaveMsg(err?.message ?? "Failed to save preferences");
+    } catch (error) {
+      setSaveMsg(getErrorMessage(error, "Failed to save preferences"));
     } finally {
       setSaving(false);
     }
@@ -103,8 +115,8 @@ export default function SettingsPage() {
       if (error) throw error;
       setUnsubscribed(next);
       setSaveMsg(next ? "Unsubscribed" : "Resubscribed");
-    } catch (err: any) {
-      setSaveMsg(err?.message ?? "Failed to update subscription");
+    } catch (error) {
+      setSaveMsg(getErrorMessage(error, "Failed to update subscription"));
     } finally {
       setSaving(false);
     }
@@ -125,12 +137,12 @@ export default function SettingsPage() {
         <p className="mt-2 text-sm text-muted-foreground">
           Please return to the home page and sign in via magic link.
         </p>
-        <a
+        <Link
           href="/"
           className="mt-6 inline-flex items-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground"
         >
           Go to home
-        </a>
+        </Link>
       </main>
     );
   }
@@ -147,7 +159,9 @@ export default function SettingsPage() {
     <main className="mx-auto min-h-dvh max-w-2xl px-4 py-10">
       <div className="mb-6 flex items-center justify-between">
         <h1 className="text-2xl font-semibold">Settings</h1>
-        <Button variant="outline" onClick={onSignOut}>Sign out</Button>
+        <Button variant="outline" onClick={onSignOut}>
+          Sign out
+        </Button>
       </div>
 
       <Card>
@@ -181,17 +195,25 @@ export default function SettingsPage() {
               <Button type="submit" disabled={saving}>
                 {saving ? "Saving…" : "Save"}
               </Button>
-              {saveMsg && (
-                <span className="text-sm text-muted-foreground">{saveMsg}</span>
-              )}
+              {saveMsg && <span className="text-sm text-muted-foreground">{saveMsg}</span>}
             </div>
             <div className="pt-2">
               {unsubscribed ? (
-                <Button type="button" variant="outline" disabled={saving} onClick={() => onToggleSubscription(false)}>
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={saving}
+                  onClick={() => onToggleSubscription(false)}
+                >
                   Resubscribe
                 </Button>
               ) : (
-                <Button type="button" variant="outline" disabled={saving} onClick={() => onToggleSubscription(true)}>
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={saving}
+                  onClick={() => onToggleSubscription(true)}
+                >
                   Unsubscribe
                 </Button>
               )}

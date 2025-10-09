@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 export default function UnsubscribeThanksPage() {
   return (
     <main className="mx-auto flex min-h-dvh max-w-md flex-col items-center justify-center px-4 text-center">
@@ -6,20 +8,19 @@ export default function UnsubscribeThanksPage() {
         You’ve been unsubscribed. Thanks for trying Newsletter AI.
       </p>
       <div className="mt-6 flex items-center gap-3">
-        <a
+        <Link
           href="/"
           className="inline-flex items-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground"
         >
           Back to home
-        </a>
-        <a
+        </Link>
+        <Link
           href="/manage"
           className="inline-flex items-center rounded-md border border-input bg-background px-4 py-2 text-sm font-medium"
         >
           Manage preferences
-        </a>
+        </Link>
       </div>
     </main>
   );
 }
-
