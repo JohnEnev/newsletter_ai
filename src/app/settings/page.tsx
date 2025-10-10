@@ -14,12 +14,6 @@ type LoadState =
   | { state: "anon" }
   | { state: "error"; message: string };
 
-type PrefsRow = {
-  interests?: string | null;
-  timeline?: string | null;
-  unsubscribed?: boolean | null;
-};
-
 function getErrorMessage(error: unknown, fallback: string) {
   if (error instanceof Error) return error.message || fallback;
   if (typeof error === "string") return error || fallback;
@@ -49,7 +43,7 @@ export default function SettingsPage() {
 
         const { data, error } = await supabase
           .from("user_prefs")
-          .select<PrefsRow>("interests, timeline, unsubscribed")
+          .select("interests, timeline, unsubscribed")
           .eq("user_id", user.id)
           .maybeSingle();
         if (error) throw error;
