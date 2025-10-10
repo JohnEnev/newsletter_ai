@@ -6,10 +6,6 @@ type AdminUser = {
   id: string;
 };
 
-type LookupResult = {
-  users?: AdminUser[];
-};
-
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const email = searchParams.get("email");
@@ -32,8 +28,9 @@ export async function GET(request: Request) {
   });
 
   try {
-    const { data } = (await admin.auth.admin.listUsers({ page: 1, perPage: 2000 })) as LookupResult;
-    const found = (data?.users || [])
+    const { data } = await admin.auth.admin.listUsers({ page: 1, perPage: 2000 });
+    const users = (data?.users || []) as AdminUser[];
+    const found = users
       .filter((candidate): candidate is AdminUser => Boolean(candidate?.id))
       .find((candidate) => candidate.email && candidate.email.toLowerCase() === email.toLowerCase());
 

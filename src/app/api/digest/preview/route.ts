@@ -8,10 +8,6 @@ type AdminUser = {
   id: string;
 };
 
-type LookupResult = {
-  users?: AdminUser[];
-};
-
 type ArticleRow = {
   id: string;
   title: string;
@@ -60,8 +56,9 @@ export async function GET(request: Request) {
   }
   if (!userId && email) {
     try {
-      const { data } = (await admin.auth.admin.listUsers({ page: 1, perPage: 200 })) as LookupResult;
-      const found = (data?.users || [])
+      const { data } = await admin.auth.admin.listUsers({ page: 1, perPage: 200 });
+      const users = (data?.users || []) as AdminUser[];
+      const found = users
         .filter((candidate): candidate is AdminUser => Boolean(candidate?.id))
         .find((candidate) => candidate.email && candidate.email.toLowerCase() === email.toLowerCase());
       if (!found) {
