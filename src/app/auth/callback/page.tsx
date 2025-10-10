@@ -14,7 +14,6 @@ const emailOtpTypes = [
   "recovery",
   "signup",
   "email_change",
-  "invitation",
 ] as const;
 type EmailOtpType = (typeof emailOtpTypes)[number];
 
