@@ -72,8 +72,8 @@ export async function GET(request: Request) {
   }
 
   const { data: prefs, error: prefsErr } = await admin
-    .from("user_prefs")
-    .select<PrefsRow>("interests, timeline, unsubscribed")
+    .from<PrefsRow>("user_prefs")
+    .select("interests, timeline, unsubscribed")
     .eq("user_id", userId)
     .maybeSingle();
   if (prefsErr) {
@@ -81,8 +81,8 @@ export async function GET(request: Request) {
   }
 
   const { data: articles, error: artErr } = await admin
-    .from("articles")
-    .select<ArticleRow>("id, title, url, summary")
+    .from<ArticleRow>("articles")
+    .select("id, title, url, summary")
     .order("created_at", { ascending: false })
     .limit(5);
   if (artErr) {
