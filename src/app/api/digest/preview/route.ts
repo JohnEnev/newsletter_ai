@@ -8,19 +8,6 @@ type AdminUser = {
   id: string;
 };
 
-type ArticleRow = {
-  id: string;
-  title: string;
-  url: string;
-  summary?: string | null;
-};
-
-type PrefsRow = {
-  interests?: string | null;
-  timeline?: string | null;
-  unsubscribed?: boolean | null;
-};
-
 function htmlesc(s: string) {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
@@ -72,7 +59,7 @@ export async function GET(request: Request) {
   }
 
   const { data: prefs, error: prefsErr } = await admin
-    .from<PrefsRow>("user_prefs")
+    .from("user_prefs")
     .select("interests, timeline, unsubscribed")
     .eq("user_id", userId)
     .maybeSingle();
@@ -81,7 +68,7 @@ export async function GET(request: Request) {
   }
 
   const { data: articles, error: artErr } = await admin
-    .from<ArticleRow>("articles")
+    .from("articles")
     .select("id, title, url, summary")
     .order("created_at", { ascending: false })
     .limit(5);
