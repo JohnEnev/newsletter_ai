@@ -17,10 +17,44 @@ const emailOtpTypes = [
 ] as const;
 type EmailOtpType = (typeof emailOtpTypes)[number];
 
+type ParsedPrefs = {
+  interests: string;
+  timeline: string;
+  sendTime: string;
+  timezone: string;
+};
+
 function deriveErrorMessage(error: unknown, fallback: string) {
   if (error instanceof Error) return error.message || fallback;
   if (typeof error === "string") return error || fallback;
   return fallback;
+}
+
+function parseStoredPrefs(raw: string | null): ParsedPrefs {
+  if (!raw) {
+    return { interests: "", timeline: "", sendTime: "", timezone: "" };
+  }
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    return {
+      interests: typeof parsed.interests === "string" ? parsed.interests : "",
+      timeline: typeof parsed.timeline === "string" ? parsed.timeline : "",
+      sendTime: typeof parsed.sendTime === "string" ? parsed.sendTime : "",
+      timezone: typeof parsed.timezone === "string" ? parsed.timezone : "",
+    };
+  } catch {
+    return { interests: "", timeline: "", sendTime: "", timezone: "" };
+  }
+}
+
+function parseSendTime(value: string | null | undefined) {
+  if (!value) return { hour: 9, minute: 0 };
+  const [hourStr = "9", minuteStr = "0"] = value.split(":");
+  const hour = Number.parseInt(hourStr, 10);
+  const minute = Number.parseInt(minuteStr, 10);
+  if (Number.isNaN(hour) || hour < 0 || hour > 23) return { hour: 9, minute: 0 };
+  if (Number.isNaN(minute) || minute < 0 || minute > 59) return { hour, minute: 0 };
+  return { hour, minute };
 }
 
 export default function AuthCallbackPage() {
@@ -75,25 +109,20 @@ export default function AuthCallbackPage() {
         setStatus({ state: "working", message: "Saving your preferences…" });
 
         const raw = localStorage.getItem("pendingSignupPrefs");
-        let interests = "";
-        let timeline = "";
-        if (raw) {
-          try {
-            const parsed = JSON.parse(raw) as Record<string, unknown>;
-            if (typeof parsed.interests === "string") {
-              interests = parsed.interests;
-            }
-            if (typeof parsed.timeline === "string") {
-              timeline = parsed.timeline;
-            }
-          } catch {
-            // ignore parse errors
-          }
-        }
+        const { interests, timeline, sendTime, timezone } = parseStoredPrefs(raw);
+        const { hour: sendHour, minute: sendMinute } = parseSendTime(sendTime);
+        const tzFromClient = timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 
         const { error: upsertError } = await supabase
           .from("user_prefs")
-          .upsert({ user_id: user.id, interests, timeline })
+          .upsert({
+            user_id: user.id,
+            interests,
+            timeline,
+            send_hour: sendHour,
+            send_minute: sendMinute,
+            send_timezone: tzFromClient,
+          })
           .select()
           .single();
         if (upsertError) throw upsertError;

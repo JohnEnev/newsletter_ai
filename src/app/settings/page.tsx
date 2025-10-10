@@ -1,18 +1,61 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { supabase } from "@/lib/supabaseClient";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+
+type IntlWithSupported = typeof Intl & { supportedValuesOf?: (key: string) => string[] };
+
+type PrefRow = {
+  interests: string | null;
+  timeline: string | null;
+  unsubscribed: boolean | null;
+  send_hour: number | null;
+  send_minute: number | null;
+  send_timezone: string | null;
+};
 
 type LoadState =
   | { state: "loading"; message?: string }
   | { state: "authed" }
   | { state: "anon" }
   | { state: "error"; message: string };
+
+function getDefaultTimezone() {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  } catch {
+    return "UTC";
+  }
+}
+
+function getTimezoneOptions(current: string) {
+  const extras = [current, "UTC", "America/New_York", "Europe/London", "Asia/Tokyo"];
+  const intl = Intl as IntlWithSupported;
+  const supported = typeof intl.supportedValuesOf === "function" ? intl.supportedValuesOf("timeZone") : [];
+  const set = new Set([...extras, ...supported]);
+  return Array.from(set.values()).sort();
+}
+
+function formatTime(hour?: number | null, minute?: number | null) {
+  const safeHour = typeof hour === "number" && hour >= 0 && hour <= 23 ? hour : 9;
+  const safeMinute = typeof minute === "number" && minute >= 0 && minute <= 59 ? minute : 0;
+  return `${String(safeHour).padStart(2, "0")}:${String(safeMinute).padStart(2, "0")}`;
+}
+
+function parseTimeInput(value: string) {
+  const [hourStr = "9", minuteStr = "0"] = value.split(":");
+  const hour = Number.parseInt(hourStr, 10);
+  const minute = Number.parseInt(minuteStr, 10);
+  if (Number.isNaN(hour) || hour < 0 || hour > 23) return { hour: 9, minute: 0 };
+  if (Number.isNaN(minute) || minute < 0 || minute > 59) return { hour, minute: 0 };
+  return { hour, minute };
+}
 
 function getErrorMessage(error: unknown, fallback: string) {
   if (error instanceof Error) return error.message || fallback;
@@ -21,9 +64,19 @@ function getErrorMessage(error: unknown, fallback: string) {
 }
 
 export default function SettingsPage() {
+  const defaultTimezone = useMemo(getDefaultTimezone, []);
   const [status, setStatus] = useState<LoadState>({ state: "loading" });
   const [interests, setInterests] = useState("");
   const [timeline, setTimeline] = useState("");
+  const [sendTime, setSendTime] = useState(formatTime());
+  const [timezone, setTimezone] = useState(defaultTimezone);
+  const timezoneOptions = useMemo(() => {
+    const list = getTimezoneOptions(defaultTimezone);
+    if (timezone && !list.includes(timezone)) {
+      return Array.from(new Set([...list, timezone])).sort();
+    }
+    return list;
+  }, [defaultTimezone, timezone]);
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState<string | null>(null);
   const [unsubscribed, setUnsubscribed] = useState(false);
@@ -42,8 +95,8 @@ export default function SettingsPage() {
         }
 
         const { data, error } = await supabase
-          .from("user_prefs")
-          .select("interests, timeline, unsubscribed")
+          .from<PrefRow>("user_prefs")
+          .select("interests, timeline, unsubscribed, send_hour, send_minute, send_timezone")
           .eq("user_id", user.id)
           .maybeSingle();
         if (error) throw error;
@@ -51,13 +104,15 @@ export default function SettingsPage() {
         setInterests(data?.interests ?? "");
         setTimeline(data?.timeline ?? "");
         setUnsubscribed(Boolean(data?.unsubscribed));
+        setSendTime(formatTime(data?.send_hour, data?.send_minute));
+        setTimezone(data?.send_timezone || defaultTimezone);
         setStatus({ state: "authed" });
       } catch (error) {
         setStatus({ state: "error", message: getErrorMessage(error, "Failed to load") });
       }
     };
     run();
-  }, []);
+  }, [defaultTimezone]);
 
   async function onSave(e: React.FormEvent) {
     e.preventDefault();
@@ -71,9 +126,19 @@ export default function SettingsPage() {
       if (userError) throw userError;
       if (!user) throw new Error("Not signed in");
 
+      const { hour, minute } = parseTimeInput(sendTime);
+
       const { error } = await supabase
         .from("user_prefs")
-        .upsert({ user_id: user.id, interests, timeline, unsubscribed })
+        .upsert({
+          user_id: user.id,
+          interests,
+          timeline,
+          unsubscribed,
+          send_hour: hour,
+          send_minute: minute,
+          send_timezone: timezone,
+        })
         .select()
         .single();
       if (error) throw error;
@@ -101,9 +166,19 @@ export default function SettingsPage() {
       if (userError) throw userError;
       if (!user) throw new Error("Not signed in");
 
+      const { hour, minute } = parseTimeInput(sendTime);
+
       const { error } = await supabase
         .from("user_prefs")
-        .upsert({ user_id: user.id, interests, timeline, unsubscribed: next })
+        .upsert({
+          user_id: user.id,
+          interests,
+          timeline,
+          unsubscribed: next,
+          send_hour: hour,
+          send_minute: minute,
+          send_timezone: timezone,
+        })
         .select()
         .single();
       if (error) throw error;
@@ -184,6 +259,34 @@ export default function SettingsPage() {
                 placeholder="e.g., daily at 8am, weekly on Mondays, flexible"
                 rows={3}
               />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="send-time">Preferred send time</Label>
+              <Input
+                id="send-time"
+                type="time"
+                value={sendTime}
+                onChange={(e) => setSendTime(e.target.value || formatTime())}
+                step={300}
+              />
+              <p className="text-xs text-muted-foreground">
+                We’ll send each digest around this time in your selected timezone.
+              </p>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="timezone">Timezone</Label>
+              <select
+                id="timezone"
+                value={timezone}
+                onChange={(e) => setTimezone(e.target.value)}
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+              >
+                {timezoneOptions.map((tz) => (
+                  <option key={tz} value={tz}>
+                    {tz}
+                  </option>
+                ))}
+              </select>
             </div>
             <div className="flex items-center gap-3">
               <Button type="submit" disabled={saving}>

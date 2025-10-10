@@ -10,6 +10,15 @@ create table if not exists public.user_prefs (
   updated_at timestamptz default now() not null
 );
 
+alter table public.user_prefs
+  add column if not exists send_timezone text default 'UTC';
+
+alter table public.user_prefs
+  add column if not exists send_hour smallint default 9;
+
+alter table public.user_prefs
+  add column if not exists send_minute smallint default 0;
+
 -- Keep updated_at fresh on writes
 create or replace function public.set_updated_at()
 returns trigger as $$
@@ -55,6 +64,23 @@ create policy "Users can update own prefs"
   for update
   using (auth.uid() = user_id)
   with check (auth.uid() = user_id);
+
+-- Ensure send time columns remain within a sane range
+do $$
+begin
+  alter table public.user_prefs
+    add constraint user_prefs_send_hour_check
+    check (send_hour between 0 and 23);
+exception when duplicate_object then null;
+end $$;
+
+do $$
+begin
+  alter table public.user_prefs
+    add constraint user_prefs_send_minute_check
+    check (send_minute between 0 and 59);
+exception when duplicate_object then null;
+end $$;
 
 -- ============================================
 -- Articles

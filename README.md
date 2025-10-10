@@ -42,10 +42,11 @@ Environment
   - `NEXT_PUBLIC_SUPABASE_URL`
   - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
   - `SUPABASE_SERVICE_ROLE_KEY` (server-only)
-  - `UNSUBSCRIBE_SECRET` (random, strong string)
-  - `UNSUBSCRIBE_SECRET_ALT` (optional, for rotation)
-  - `APP_BASE_URL` (e.g., `http://localhost:3000`)
-  - `DIGEST_PREVIEW_SECRET` (protects preview API)
+- `UNSUBSCRIBE_SECRET` (random, strong string)
+- `UNSUBSCRIBE_SECRET_ALT` (optional, for rotation)
+- `APP_BASE_URL` (e.g., `http://localhost:3000`)
+- `DIGEST_PREVIEW_SECRET` (protects preview API)
+- `DIGEST_RUN_SECRET` (protects the scheduled digest endpoint)
 
 Database
 - Run `supabase/schema.sql` in the Supabase SQL editor to create `public.user_prefs` and RLS policies.
@@ -54,10 +55,11 @@ Magic-link signup flow
 1. Start dev: `npm run dev` and open `http://localhost:3000`.
 2. Enter email on the homepage. Add interests/timeline when prompted and hit Continue.
 3. Click the magic link in your inbox; the callback page saves preferences to `user_prefs`.
+4. During signup (and later in Settings) you can pick a preferred send time and timezone. We store them on `user_prefs` as `send_hour`, `send_minute`, and `send_timezone` for the scheduler.
 
 Where data lands
 - Auth user: `auth.users` (email, id).
-- Preferences: `public.user_prefs` (user_id, interests, timeline, unsubscribed).
+- Preferences: `public.user_prefs` (user_id, interests, timeline, unsubscribed, send_timezone, send_hour, send_minute).
 
 One-click links (no login)
 - Unsubscribe: `/unsubscribe?token=...` (or `&action=subscribe` to resubscribe).
@@ -105,6 +107,21 @@ Seeding articles
 - Run: `node scripts/seed-articles.mjs`
 - Inserts a few example articles if they don’t exist (by URL).
 
+Syncing articles (JSON feed or local file)
+- Command: `npm run articles:sync`
+- Options:
+  ```bash
+  # Load from the default sample file (scripts/data/example-articles.json)
+  npm run articles:sync
+
+  # Import from a custom JSON endpoint
+  npm run articles:sync -- --feed https://yourdomain.com/articles.json
+
+  # Preview without inserting rows
+  npm run articles:sync -- --dry-run --limit 10
+  ```
+- Expected JSON shape: array of `{ title, url, summary?, tags? }`. The script skips existing URLs and stores `tags` as `jsonb`.
+
 Digest preview (HTML)
 - Endpoint: `/api/digest/preview?secret=${DIGEST_PREVIEW_SECRET}&user_id=<uuid>`
   - Or: `/api/digest/preview?secret=${DIGEST_PREVIEW_SECRET}&email=<address>`
@@ -119,19 +136,26 @@ Generate digest files (batch)
   ```
 
 Send digests via Resend (batch)
-- Set in `.env.local`: `RESEND_API_KEY`, `EMAIL_FROM`, `EMAIL_SUBJECT`, `APP_BASE_URL`, `UNSUBSCRIBE_SECRET` (and optionally ALT), Supabase keys.
-- Script: `node scripts/send-digests.mjs [--limit 50] [--email you@example.com | --user-id UUID] [--days 7] [--alt] [--include-unsubscribed] [--dry-run]`
-- Examples:
+- Required env (local + Vercel): `RESEND_API_KEY`, `EMAIL_FROM`, `EMAIL_SUBJECT`, `APP_BASE_URL`, `UNSUBSCRIBE_SECRET` (and optionally ALT), Supabase keys.
+- Commands:
   ```bash
-  # Dry run first
-  node scripts/send-digests.mjs --limit 5 --dry-run
+  # View the payload without sending email (override base URL if APP_BASE_URL is unset)
+  npm run digest:dry -- --email you@example.com --base https://newsletter-ai-six.vercel.app
 
-  # Send to a single user by email
-  node scripts/send-digests.mjs --email you@example.com
-
-  # Send to recent 50 users, skipping unsubscribed
-  node scripts/send-digests.mjs --limit 50
+  # Send the real email through Resend
+  npm run digest:send -- --email you@example.com --base https://newsletter-ai-six.vercel.app
   ```
+- Flags: `--limit`, `--days`, `--alt`, `--include-unsubscribed`, `--dry-run`, and `--base` (overrides APP_BASE_URL when you want tokens pointing at production while running locally).
+- The script logs the base URL; if you see `http://localhost:3000`, pass `--base` or set `APP_BASE_URL` so links in the email point at the deployed site.
+
+Automated daily digest
+- Protect the scheduler endpoint with `DIGEST_RUN_SECRET` and deploy the new route at `/api/digest/run`.
+- Trigger manually with:
+  ```bash
+  curl "https://newsletter-ai-six.vercel.app/api/digest/run?secret=$DIGEST_RUN_SECRET&dry=1"
+  ```
+  Use `dry=1` to preview which users would receive an email and `window=<minutes>` (default `15`) to tweak the matching window.
+- Add a Vercel cron (Settings → Cron Jobs) that hits `/api/digest/run?secret=...` at your desired cadence (e.g., every 15 minutes). The handler compares the stored `send_hour`, `send_minute`, and `send_timezone` to decide who should receive the digest in that run.
 
 Used/expired link UX
 - Friendly page at `/link/used` for consumed or expired tokens.

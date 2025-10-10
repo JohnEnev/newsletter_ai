@@ -1,15 +1,21 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@supabase/supabase-js";
-import {
-  verifyTokenWithSecrets,
-  getPayloadNonce,
-  consumeNonce,
-  type TokenPayload,
-} from "@/lib/tokens";
+import { verifyTokenWithSecrets, getPayloadNonce, consumeNonce, type TokenPayload } from "@/lib/tokens";
 
 type PageProps = {
   searchParams?: Record<string, string | string[] | undefined>;
 };
+
+type PrefRow = {
+  interests: string | null;
+  timeline: string | null;
+  unsubscribed: boolean | null;
+  send_timezone: string | null;
+  send_hour: number | null;
+  send_minute: number | null;
+};
+
+type IntlWithSupported = typeof Intl & { supportedValuesOf?: (key: string) => string[] };
 
 function validateEnv() {
   const secret = process.env.UNSUBSCRIBE_SECRET;
@@ -21,6 +27,30 @@ function validateEnv() {
 
 function getSecrets(secret?: string | null, secretAlt?: string | null) {
   return [secret, secretAlt].filter(Boolean) as string[];
+}
+
+function formatTime(hour: number | null | undefined, minute: number | null | undefined) {
+  const safeHour = typeof hour === "number" && hour >= 0 && hour <= 23 ? hour : 9;
+  const safeMinute = typeof minute === "number" && minute >= 0 && minute <= 59 ? minute : 0;
+  return `${String(safeHour).padStart(2, "0")}:${String(safeMinute).padStart(2, "0")}`;
+}
+
+function parseTimeInput(value: string | null | undefined) {
+  if (!value) return { hour: 9, minute: 0 };
+  const [hourStr = "9", minuteStr = "0"] = value.split(":");
+  const hour = Number.parseInt(hourStr, 10);
+  const minute = Number.parseInt(minuteStr, 10);
+  if (Number.isNaN(hour) || hour < 0 || hour > 23) return { hour: 9, minute: 0 };
+  if (Number.isNaN(minute) || minute < 0 || minute > 59) return { hour, minute: 0 };
+  return { hour, minute };
+}
+
+function getTimezoneOptions(current: string) {
+  const extras = [current, "UTC", "America/New_York", "Europe/London", "Asia/Tokyo"];
+  const intl = Intl as IntlWithSupported;
+  const supported = typeof intl.supportedValuesOf === "function" ? intl.supportedValuesOf("timeZone") : [];
+  const set = new Set([...extras, ...supported]);
+  return Array.from(set.values()).sort();
 }
 
 export default async function ManagePage({ searchParams }: PageProps) {
@@ -48,10 +78,7 @@ export default async function ManagePage({ searchParams }: PageProps) {
     );
   }
 
-  const verification = verifyTokenWithSecrets<TokenPayload>(
-    token,
-    getSecrets(secret, secretAlt)
-  );
+  const verification = verifyTokenWithSecrets<TokenPayload>(token, getSecrets(secret, secretAlt));
   if (!verification.ok) {
     return (
       <main className="mx-auto flex min-h-dvh max-w-md flex-col items-center justify-center px-4 text-center">
@@ -75,15 +102,18 @@ export default async function ManagePage({ searchParams }: PageProps) {
     auth: { autoRefreshToken: false, persistSession: false },
   });
 
-  const { data: prefs } = await admin
-    .from("user_prefs")
-    .select("interests, timeline, unsubscribed")
+  const { data } = await admin
+    .from<PrefRow>("user_prefs")
+    .select("interests, timeline, unsubscribed, send_timezone, send_hour, send_minute")
     .eq("user_id", user_id)
     .maybeSingle();
 
-  const initialInterests = prefs?.interests ?? "";
-  const initialTimeline = prefs?.timeline ?? "";
-  const initialUnsub = Boolean(prefs?.unsubscribed);
+  const initialInterests = data?.interests ?? "";
+  const initialTimeline = data?.timeline ?? "";
+  const initialUnsub = Boolean(data?.unsubscribed);
+  const initialTimezone = data?.send_timezone || "UTC";
+  const initialSendTime = formatTime(data?.send_hour, data?.send_minute);
+  const timezoneOptions = getTimezoneOptions(initialTimezone);
 
   async function updatePrefs(formData: FormData) {
     "use server";
@@ -92,6 +122,8 @@ export default async function ManagePage({ searchParams }: PageProps) {
     const timeline = String(formData.get("timeline") || "");
     const forceResub = String(formData.get("forceResubscribe") || "") === "1";
     const unsub = forceResub ? false : String(formData.get("unsubscribed") || "false") === "true";
+    const sendTimeRaw = String(formData.get("sendTime") || "");
+    const sendTimezone = String(formData.get("sendTimezone") || "UTC");
 
     const { secret, secretAlt, supabaseUrl, serviceRoleKey } = validateEnv();
     const failureUrl = `/manage?token=${encodeURIComponent(tokenValue)}&ok=0`;
@@ -100,10 +132,7 @@ export default async function ManagePage({ searchParams }: PageProps) {
       redirect(failureUrl);
     }
 
-    const verification = verifyTokenWithSecrets<TokenPayload>(
-      tokenValue,
-      getSecrets(secret, secretAlt)
-    );
+    const verification = verifyTokenWithSecrets<TokenPayload>(tokenValue, getSecrets(secret, secretAlt));
     if (!verification.ok) {
       redirect(failureUrl);
     }
@@ -130,9 +159,19 @@ export default async function ManagePage({ searchParams }: PageProps) {
       redirect(failureUrl);
     }
 
+    const { hour: sendHour, minute: sendMinute } = parseTimeInput(sendTimeRaw);
+
     await adminClient
       .from("user_prefs")
-      .upsert({ user_id: userId, interests, timeline, unsubscribed: unsub })
+      .upsert({
+        user_id: userId,
+        interests,
+        timeline,
+        unsubscribed: unsub,
+        send_hour: sendHour,
+        send_minute: sendMinute,
+        send_timezone: sendTimezone || "UTC",
+      })
       .select()
       .single();
 
@@ -180,6 +219,39 @@ export default async function ManagePage({ searchParams }: PageProps) {
             className="flex min-h-[60px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
           />
         </div>
+        <div className="space-y-1.5">
+          <label htmlFor="sendTime" className="text-sm font-medium">
+            Preferred send time
+          </label>
+          <input
+            id="sendTime"
+            name="sendTime"
+            type="time"
+            defaultValue={initialSendTime}
+            step={300}
+            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+          />
+          <p className="text-xs text-muted-foreground">
+            Digests will send around this time in your selected timezone.
+          </p>
+        </div>
+        <div className="space-y-1.5">
+          <label htmlFor="sendTimezone" className="text-sm font-medium">
+            Timezone
+          </label>
+          <select
+            id="sendTimezone"
+            name="sendTimezone"
+            defaultValue={initialTimezone}
+            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+          >
+            {timezoneOptions.map((tz) => (
+              <option key={tz} value={tz}>
+                {tz}
+              </option>
+            ))}
+          </select>
+        </div>
         {initialUnsub ? (
           <div className="space-y-1.5">
             <label className="text-sm font-medium">Subscription</label>
@@ -194,6 +266,9 @@ export default async function ManagePage({ searchParams }: PageProps) {
                 formAction={async (formData) => {
                   "use server";
                   const tokenValue = String(formData.get("token") || "");
+                  const sendTimeRaw = String(formData.get("sendTime") || "");
+                  const sendTimezone = String(formData.get("sendTimezone") || "UTC");
+
                   const { secret, secretAlt, supabaseUrl, serviceRoleKey } = validateEnv();
                   const failureUrl = `/manage?token=${encodeURIComponent(tokenValue)}&ok=0`;
 
@@ -201,10 +276,7 @@ export default async function ManagePage({ searchParams }: PageProps) {
                     redirect(failureUrl);
                   }
 
-                  const verification = verifyTokenWithSecrets<TokenPayload>(
-                    tokenValue,
-                    getSecrets(secret, secretAlt)
-                  );
+                  const verification = verifyTokenWithSecrets<TokenPayload>(tokenValue, getSecrets(secret, secretAlt));
                   if (!verification.ok) {
                     redirect(failureUrl);
                   }
@@ -231,9 +303,17 @@ export default async function ManagePage({ searchParams }: PageProps) {
                     redirect(failureUrl);
                   }
 
+                  const { hour: sendHour, minute: sendMinute } = parseTimeInput(sendTimeRaw);
+
                   await adminClient
                     .from("user_prefs")
-                    .upsert({ user_id: userId!, unsubscribed: true })
+                    .upsert({
+                      user_id: userId,
+                      unsubscribed: true,
+                      send_hour: sendHour,
+                      send_minute: sendMinute,
+                      send_timezone: sendTimezone || "UTC",
+                    })
                     .select()
                     .single();
 

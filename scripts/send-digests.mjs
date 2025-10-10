@@ -47,7 +47,7 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 function usage(msg) {
   if (msg) console.error("Error:", msg);
-  console.log(`\nUsage:\n  node scripts/send-digests.mjs [--email you@example.com | --user-id UUID | --limit 50] [--days 7] [--alt] [--include-unsubscribed] [--dry-run]\n\nNotes:\n- Requires RESEND_API_KEY, EMAIL_FROM, EMAIL_SUBJECT, APP_BASE_URL, UNSUBSCRIBE_SECRET(_ALT), NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY.\n- Sends per-user HTML emails via Resend.\n`);
+  console.log(`\nUsage:\n  node scripts/send-digests.mjs [--email you@example.com | --user-id UUID | --limit 50] [--days 7] [--alt] [--include-unsubscribed] [--dry-run] [--base https://your.app]\n\nNotes:\n- Requires RESEND_API_KEY, EMAIL_FROM, EMAIL_SUBJECT, APP_BASE_URL, UNSUBSCRIBE_SECRET(_ALT), NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY.\n- Sends per-user HTML emails via Resend.\n`);
   process.exit(msg ? 1 : 0);
 }
 
@@ -61,6 +61,7 @@ async function main() {
   let useAlt = false;
   let includeUnsub = false;
   let dryRun = false;
+  let baseOverride = null;
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === "--email") email = args[++i];
@@ -70,6 +71,7 @@ async function main() {
     else if (a === "--alt") useAlt = true;
     else if (a === "--include-unsubscribed") includeUnsub = true;
     else if (a === "--dry-run") dryRun = true;
+    else if (a === "--base") baseOverride = args[++i];
     else if (a === "-h" || a === "--help") usage();
     else usage(`Unknown arg: ${a}`);
   }
@@ -79,7 +81,8 @@ async function main() {
   const from = fromEnv;
   const fromValid = /.+<[^<>@\s]+@[^<>@\s]+\.[^<>@\s]+>/.test(from) || /^[^<>@\s]+@[^<>@\s]+\.[^<>@\s]+$/.test(from);
   const subject = process.env.EMAIL_SUBJECT || "Your Newsletter";
-  const base = process.env.APP_BASE_URL || "http://localhost:3000";
+  const envBase = process.env.APP_BASE_URL;
+  const base = baseOverride || envBase || "http://localhost:3000";
   const signer = useAlt ? (process.env.UNSUBSCRIBE_SECRET_ALT || "") : (process.env.UNSUBSCRIBE_SECRET || "");
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -88,6 +91,10 @@ async function main() {
   if (!signer) usage(useAlt ? "UNSUBSCRIBE_SECRET_ALT not set" : "UNSUBSCRIBE_SECRET not set");
   if (!resendApiKey && !dryRun) usage("RESEND_API_KEY not set (or pass --dry-run)");
   if (!fromValid) usage("EMAIL_FROM invalid. Use 'you@example.com' or 'Name <you@example.com>' (e.g., 'Newsletter AI <onboarding@resend.dev>')");
+  if (!envBase && !baseOverride) {
+    console.warn("[warn] APP_BASE_URL not set; using http://localhost:3000. Provide --base or set APP_BASE_URL for production links.");
+  }
+  console.log(`[info] Using base URL: ${base}`);
 
   const admin = createClient(supabaseUrl, serviceRoleKey, { auth: { autoRefreshToken: false, persistSession: false } });
 

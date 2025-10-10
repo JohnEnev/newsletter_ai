@@ -6,7 +6,10 @@
     "dev": "next dev --turbopack",
     "build": "next build --turbopack",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "digest:dry": "node scripts/send-digests.mjs --dry-run",
+    "digest:send": "node scripts/send-digests.mjs",
+    "articles:sync": "node scripts/fetch-articles.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.57.4",
