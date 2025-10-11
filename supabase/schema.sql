@@ -92,9 +92,13 @@ create table if not exists public.articles (
   url text not null,
   summary text,
   tags jsonb,
+  source text,
   created_at timestamptz default now() not null,
   updated_at timestamptz default now() not null
 );
+
+alter table public.articles
+  add column if not exists source text;
 
 drop trigger if exists set_articles_updated_at on public.articles;
 create trigger set_articles_updated_at
