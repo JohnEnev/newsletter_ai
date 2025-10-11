@@ -117,9 +117,12 @@ function buildDigestHtml({
 
 export async function GET(request: Request) {
   const url = new URL(request.url);
-  const runSecret = process.env.DIGEST_RUN_SECRET || "";
+  const runSecret = process.env.DIGEST_RUN_SECRET || process.env.CRON_SECRET || "";
   const providedSecret = url.searchParams.get("secret") || "";
-  if (!runSecret || providedSecret !== runSecret) {
+  const authHeader = request.headers.get("authorization") || "";
+  const bearerToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
+  const hasValidSecret = runSecret && (providedSecret === runSecret || bearerToken === runSecret);
+  if (!hasValidSecret) {
     return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
   }
 
