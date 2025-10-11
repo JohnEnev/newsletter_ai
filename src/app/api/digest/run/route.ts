@@ -152,14 +152,14 @@ export async function GET(request: Request) {
     auth: { autoRefreshToken: false, persistSession: false },
   });
 
-  const { data: prefs, error: prefsError } = await admin
-    .from<PrefRow>("user_prefs")
+  const { data: rawPrefs, error: prefsError } = await admin
+    .from("user_prefs")
     .select("user_id, interests, timeline, unsubscribed, send_timezone, send_hour, send_minute");
   if (prefsError) {
     return NextResponse.json({ ok: false, error: prefsError.message }, { status: 500 });
   }
-
-  const activePrefs = (prefs || []).filter((pref) => !pref.unsubscribed);
+  const prefs = (rawPrefs ?? []) as PrefRow[];
+  const activePrefs = prefs.filter((pref) => !pref.unsubscribed);
   if (activePrefs.length === 0) {
     return NextResponse.json({ ok: true, sent: 0, message: "No active users" });
   }
@@ -178,14 +178,15 @@ export async function GET(request: Request) {
     return NextResponse.json({ ok: true, sent: 0, message: "No users within window" });
   }
 
-  const { data: articles, error: artErr } = await admin
-    .from<ArticleRow>("articles")
+  const { data: rawArticles, error: artErr } = await admin
+    .from("articles")
     .select("id, title, url, summary")
     .order("created_at", { ascending: false })
     .limit(5);
   if (artErr) {
     return NextResponse.json({ ok: false, error: artErr.message }, { status: 500 });
   }
+  const articles = (rawArticles ?? []) as ArticleRow[];
 
   const { data: userList } = await admin.auth.admin.listUsers({ page: 1, perPage: 2000 });
   const emailLookup = new Map<string, string>();
@@ -229,7 +230,7 @@ export async function GET(request: Request) {
     const resubscribeUrl = makeLink("/unsubscribe", resubscribeToken, "&action=subscribe");
 
     const yesNoLinks: Record<string, { yes: string; no: string }> = {};
-    for (const article of articles || []) {
+    for (const article of articles) {
       const yesToken = signPayload<TokenPayload>({
         user_id: pref.user_id,
         exp: Math.floor(Date.now() / 1000) + 7 * 24 * 3600,
@@ -254,7 +255,7 @@ export async function GET(request: Request) {
 
     const html = buildDigestHtml({
       prefs: pref,
-      articles: articles || [],
+      articles,
       manageUrl,
       unsubscribeUrl,
       resubscribeUrl,
