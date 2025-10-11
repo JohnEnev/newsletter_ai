@@ -95,17 +95,18 @@ export default function SettingsPage() {
         }
 
         const { data, error } = await supabase
-          .from<PrefRow>("user_prefs")
+          .from("user_prefs")
           .select("interests, timeline, unsubscribed, send_hour, send_minute, send_timezone")
           .eq("user_id", user.id)
           .maybeSingle();
         if (error) throw error;
 
-        setInterests(data?.interests ?? "");
-        setTimeline(data?.timeline ?? "");
-        setUnsubscribed(Boolean(data?.unsubscribed));
-        setSendTime(formatTime(data?.send_hour, data?.send_minute));
-        setTimezone(data?.send_timezone || defaultTimezone);
+        const prefs = (data ?? {}) as PrefRow | null;
+        setInterests(prefs?.interests ?? "");
+        setTimeline(prefs?.timeline ?? "");
+        setUnsubscribed(Boolean(prefs?.unsubscribed));
+        setSendTime(formatTime(prefs?.send_hour, prefs?.send_minute));
+        setTimezone(prefs?.send_timezone || defaultTimezone);
         setStatus({ state: "authed" });
       } catch (error) {
         setStatus({ state: "error", message: getErrorMessage(error, "Failed to load") });
