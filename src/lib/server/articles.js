@@ -38,6 +38,22 @@ const STOP_WORDS = new Set([
 
 const SAMPLE_JSON = path.resolve(process.cwd(), "scripts/data/example-articles.json");
 
+/**
+ * @typedef {Object} GatherOptions
+ * @property {string[]} [feedUrls]
+ * @property {boolean} [noDefaultFeeds]
+ * @property {string} [sourceFile]
+ */
+
+/**
+ * @typedef {Object} ArticleCandidate
+ * @property {string} title
+ * @property {string} url
+ * @property {string | null | undefined} [summary]
+ * @property {string[]} tags
+ * @property {string} source
+ */
+
 function decodeHtml(value = "") {
   return value
     .replace(/<!\[CDATA\[(.*?)\]\]>/gs, "$1")
@@ -174,7 +190,12 @@ function loadLocalArticles(sourceFile) {
   }
 }
 
+/**
+ * @param {GatherOptions} [options]
+ * @returns {Promise<ArticleCandidate[]>}
+ */
 export async function gatherArticles({ feedUrls = [], noDefaultFeeds = false, sourceFile } = {}) {
+  /** @type {string[]} */
   const feeds = [];
   if (!noDefaultFeeds) feeds.push(...DEFAULT_FEEDS);
   feeds.push(...feedUrls);
