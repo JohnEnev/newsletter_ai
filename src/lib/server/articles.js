@@ -37,6 +37,29 @@ const STOP_WORDS = new Set([
 ]);
 
 const SAMPLE_JSON = path.resolve(process.cwd(), "scripts/data/example-articles.json");
+const FALLBACK_ARTICLES = [
+  {
+    title: "AI Strategy Briefing",
+    url: "https://example.com/briefing/ai-strategy",
+    summary: "Key stories across AI policy, tooling, and product launches from the last 24 hours.",
+    tags: ["ai", "strategy", "product"],
+    source: "example.com",
+  },
+  {
+    title: "Design Systems That Ship",
+    url: "https://example.com/design-systems",
+    summary: "Tactics for keeping design systems flexible while teams iterate quickly.",
+    tags: ["design", "frontend", "systems"],
+    source: "example.com",
+  },
+  {
+    title: "Climate Tech Roundup",
+    url: "https://example.com/climate-tech",
+    summary: "Daily highlights covering carbon removal, grid storage, and climate venture trends.",
+    tags: ["climate", "energy", "startups"],
+    source: "example.com",
+  },
+];
 
 /**
  * @typedef {Object} GatherOptions
@@ -162,12 +185,12 @@ function loadLocalArticles(sourceFile) {
   const candidate = sourceFile
     ? (path.isAbsolute(sourceFile) ? sourceFile : path.resolve(process.cwd(), sourceFile))
     : SAMPLE_JSON;
-  if (!fs.existsSync(candidate)) return [];
+  if (!fs.existsSync(candidate)) return FALLBACK_ARTICLES;
   try {
     const txt = fs.readFileSync(candidate, "utf-8");
     const parsed = JSON.parse(txt);
     const list = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.items) ? parsed.items : [];
-    return list
+    const hydrated = list
       .map((item) => {
         const title = String(item.title ?? "").trim();
         const url = String(item.url ?? "").trim();
@@ -184,9 +207,11 @@ function loadLocalArticles(sourceFile) {
         return { title, url, summary, tags, source };
       })
       .filter(Boolean);
+    if (hydrated.length === 0) return FALLBACK_ARTICLES;
+    return hydrated;
   } catch (err) {
     console.warn(`[warn] Could not parse ${candidate}: ${err instanceof Error ? err.message : err}`);
-    return [];
+    return FALLBACK_ARTICLES;
   }
 }
 
