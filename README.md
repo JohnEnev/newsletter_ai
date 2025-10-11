@@ -100,27 +100,30 @@ Troubleshooting
 
 Schema overview
 - user_prefs: user-level interests/timeline/unsubscribed (RLS: user may read/update own).
-- articles: content items (open read policy).
+- articles: content items (open read policy; stores summary, tags, and source hostname).
 - surveys: feedback events (RLS: user may read/insert own; server routes use service role).
 
 Seeding articles
 - Run: `node scripts/seed-articles.mjs`
 - Inserts a few example articles if they don’t exist (by URL).
 
-Syncing articles (JSON feed or local file)
+Syncing articles (RSS + JSON fallback)
 - Command: `npm run articles:sync`
 - Options:
   ```bash
-  # Load from the default sample file (scripts/data/example-articles.json)
+  # Default RSS feeds (Hacker News, NYT Tech, Product Hunt)
   npm run articles:sync
 
-  # Import from a custom JSON endpoint
-  npm run articles:sync -- --feed https://yourdomain.com/articles.json
+  # Add custom feeds
+  npm run articles:sync -- --feed https://example.com/rss.xml --feed https://another.com/feed
 
   # Preview without inserting rows
   npm run articles:sync -- --dry-run --limit 10
+
+  # Skip built-in feeds and only use your sources
+  npm run articles:sync -- --no-default --feed https://example.com/rss.xml
   ```
-- Expected JSON shape: array of `{ title, url, summary?, tags? }`. The script skips existing URLs and stores `tags` as `jsonb`.
+- Each ingest writes summaries, tags, and a `source` hostname into `public.articles`.
 
 Digest preview (HTML)
 - Endpoint: `/api/digest/preview?secret=${DIGEST_PREVIEW_SECRET}&user_id=<uuid>`
@@ -148,14 +151,20 @@ Send digests via Resend (batch)
 - Flags: `--limit`, `--days`, `--alt`, `--include-unsubscribed`, `--dry-run`, and `--base` (overrides APP_BASE_URL when you want tokens pointing at production while running locally).
 - The script logs the base URL; if you see `http://localhost:3000`, pass `--base` or set `APP_BASE_URL` so links in the email point at the deployed site.
 
-Automated daily digest
-- Protect the scheduler endpoint with `DIGEST_RUN_SECRET` and deploy the new route at `/api/digest/run`.
-- Trigger manually with:
+Automated cron jobs
+- **Digest send (every 15 min)**: `/api/digest/run` protected by `DIGEST_RUN_SECRET` (or `CRON_SECRET`). Preview with:
   ```bash
-  curl "https://newsletter-ai-six.vercel.app/api/digest/run?secret=$DIGEST_RUN_SECRET&dry=1"
+  curl -H "Authorization: Bearer $DIGEST_RUN_SECRET" \
+       "https://newsletter-ai-six.vercel.app/api/digest/run?dry=1"
   ```
-  Use `dry=1` to preview which users would receive an email and `window=<minutes>` (default `15`) to tweak the matching window.
-- Add a Vercel cron (Settings → Cron Jobs) that hits `/api/digest/run?secret=...` at your desired cadence (e.g., every 15 minutes). The handler compares the stored `send_hour`, `send_minute`, and `send_timezone` to decide who should receive the digest in that run.
+  Use `window=<minutes>` (default `15`) to tweak the matching window before sending.
+- **Article sync (daily at 00:00 UTC)**: `/api/articles/sync` protected by `ARTICLES_SYNC_SECRET`. Preview with:
+  ```bash
+  curl -H "Authorization: Bearer $ARTICLES_SYNC_SECRET" \
+       "https://newsletter-ai-six.vercel.app/api/articles/sync?dry=1"
+  ```
+  Add additional feeds with `&feed=https://example.com/rss.xml`. Remove `dry=1` to insert rows.
+  Both jobs are declared in `vercel.json`, so Vercel provisions the cron schedule on deploy.
 
 Used/expired link UX
 - Friendly page at `/link/used` for consumed or expired tokens.

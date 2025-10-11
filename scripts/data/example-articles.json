@@ -1,0 +1,23 @@
+[
+  {
+    "title": "AI Strategy Briefing",
+    "url": "https://example.com/briefing/ai-strategy",
+    "summary": "Key stories across AI policy, tooling, and product launches from the last 24 hours.",
+    "tags": ["ai", "strategy", "product"],
+    "source": "example.com"
+  },
+  {
+    "title": "Design Systems That Ship",
+    "url": "https://example.com/design-systems",
+    "summary": "Tactics for keeping design systems flexible while teams iterate quickly.",
+    "tags": ["design", "frontend", "systems"],
+    "source": "example.com"
+  },
+  {
+    "title": "Climate Tech Roundup",
+    "url": "https://example.com/climate-tech",
+    "summary": "Daily highlights covering carbon removal, grid storage, and climate venture trends.",
+    "tags": ["climate", "energy", "startups"],
+    "source": "example.com"
+  }
+]
