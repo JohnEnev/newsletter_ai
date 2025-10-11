@@ -103,16 +103,18 @@ export default async function ManagePage({ searchParams }: PageProps) {
   });
 
   const { data } = await admin
-    .from<PrefRow>("user_prefs")
+    .from("user_prefs")
     .select("interests, timeline, unsubscribed, send_timezone, send_hour, send_minute")
     .eq("user_id", user_id)
     .maybeSingle();
 
-  const initialInterests = data?.interests ?? "";
-  const initialTimeline = data?.timeline ?? "";
-  const initialUnsub = Boolean(data?.unsubscribed);
-  const initialTimezone = data?.send_timezone || "UTC";
-  const initialSendTime = formatTime(data?.send_hour, data?.send_minute);
+  const prefs = (data ?? {}) as PrefRow | null;
+
+  const initialInterests = prefs?.interests ?? "";
+  const initialTimeline = prefs?.timeline ?? "";
+  const initialUnsub = Boolean(prefs?.unsubscribed);
+  const initialTimezone = prefs?.send_timezone || "UTC";
+  const initialSendTime = formatTime(prefs?.send_hour, prefs?.send_minute);
   const timezoneOptions = getTimezoneOptions(initialTimezone);
 
   async function updatePrefs(formData: FormData) {
