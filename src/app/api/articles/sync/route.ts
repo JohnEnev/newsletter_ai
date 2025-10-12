@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { createHmac, timingSafeEqual } from "crypto";
 import { gatherArticles, ingestArticles, sampleDataPath } from "@/lib/server/articles";
 
 export const runtime = "nodejs";
@@ -18,11 +19,32 @@ function parseLimit(raw: string | null) {
   return value;
 }
 
+async function isValidCronRequest(request: Request, fallbackSecret: string) {
+  if (!request.headers.get("x-vercel-cron")) return false;
+  const secret = process.env.VERCEL_CRON_SECRET || fallbackSecret;
+  if (!secret) return false;
+  const signature = request.headers.get("x-vercel-signature");
+  if (!signature) return false;
+
+  const body = await request.clone().text();
+  const expected = createHmac("sha256", secret).update(body).digest("hex");
+  const provided = Buffer.from(signature, "hex");
+  const comparison = Buffer.from(expected, "hex");
+
+  try {
+    return timingSafeEqual(provided, comparison);
+  } catch {
+    return provided.toString("hex") === comparison.toString("hex");
+  }
+}
+
 export async function GET(request: Request) {
   const url = new URL(request.url);
   const requiredSecret = process.env.ARTICLES_SYNC_SECRET || process.env.CRON_SECRET || "";
   const providedSecret = readSecret(request, url);
-  if (!requiredSecret || providedSecret !== requiredSecret) {
+  const authorized = (requiredSecret && providedSecret === requiredSecret)
+    || (await isValidCronRequest(request, requiredSecret));
+  if (!authorized) {
     return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
   }
 
