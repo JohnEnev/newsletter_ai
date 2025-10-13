@@ -19,6 +19,23 @@ function parseLimit(raw: string | null) {
   return value;
 }
 
+function parseSignatureVariants(signature: string) {
+  const trimmed = signature.trim();
+  const candidates = [trimmed];
+  if (trimmed.startsWith("sha1=")) candidates.push(trimmed.slice(5));
+  if (trimmed.startsWith("sha256=")) candidates.push(trimmed.slice(7));
+  return Array.from(new Set(candidates));
+}
+
+function buffersEqual(a: Buffer, b: Buffer) {
+  if (a.length !== b.length) return false;
+  try {
+    return timingSafeEqual(a, b);
+  } catch {
+    return a.toString("hex") === b.toString("hex");
+  }
+}
+
 async function isValidCronRequest(request: Request, fallbackSecret: string) {
   if (!request.headers.get("x-vercel-cron")) return false;
   const secret = process.env.VERCEL_CRON_SECRET || fallbackSecret;
@@ -27,15 +44,22 @@ async function isValidCronRequest(request: Request, fallbackSecret: string) {
   if (!signature) return false;
 
   const body = await request.clone().text();
-  const expected = createHmac("sha256", secret).update(body).digest("hex");
-  const provided = Buffer.from(signature, "hex");
-  const comparison = Buffer.from(expected, "hex");
+  const expectedBuffer = createHmac("sha256", secret).update(body).digest();
+  const variants = parseSignatureVariants(signature);
 
-  try {
-    return timingSafeEqual(provided, comparison);
-  } catch {
-    return provided.toString("hex") === comparison.toString("hex");
+  for (const variant of variants) {
+    try {
+      const providedHex = Buffer.from(variant, "hex");
+      if (buffersEqual(providedHex, expectedBuffer)) return true;
+    } catch {}
+
+    try {
+      const providedBase64 = Buffer.from(variant, "base64");
+      if (buffersEqual(providedBase64, expectedBuffer)) return true;
+    } catch {}
   }
+
+  return false;
 }
 
 export async function GET(request: Request) {
