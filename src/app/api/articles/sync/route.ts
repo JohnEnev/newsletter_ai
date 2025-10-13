@@ -11,12 +11,14 @@ function logAuthProbe({
   signature,
   requiredSecret,
   providedSecret,
+  headerNames,
 }: {
   route: string;
   cronHeader: string | null;
   signature: string | null;
   requiredSecret: string;
   providedSecret: string;
+  headerNames: string[];
 }) {
   console.log(`[${route}] auth probe`, {
     cronHeader,
@@ -27,6 +29,7 @@ function logAuthProbe({
     providedSecretPresent: Boolean(providedSecret),
     providedSecretLength: providedSecret ? providedSecret.length : 0,
     cronSecretPresent: Boolean(process.env.VERCEL_CRON_SECRET),
+    headerNames,
   });
 }
 
@@ -97,6 +100,7 @@ export async function GET(request: Request) {
     signature: request.headers.get("x-vercel-signature"),
     requiredSecret,
     providedSecret,
+    headerNames: Array.from(request.headers.keys()).slice(0, 20),
   });
   const authorized = (requiredSecret && providedSecret === requiredSecret)
     || (await isValidCronRequest(request, requiredSecret));
