@@ -31,6 +31,7 @@ function logAuthProbe({
   providedSecret,
   bearerToken,
   headerNames,
+  vercelId,
 }: {
   route: string;
   cronHeader: string | null;
@@ -39,6 +40,7 @@ function logAuthProbe({
   providedSecret: string;
   bearerToken: string;
   headerNames: string[];
+  vercelId: string | null;
 }) {
   console.log(`[${route}] auth probe`, {
     cronHeader,
@@ -51,6 +53,9 @@ function logAuthProbe({
     bearerTokenPresent: Boolean(bearerToken),
     bearerTokenLength: bearerToken ? bearerToken.length : 0,
     cronSecretPresent: Boolean(process.env.VERCEL_CRON_SECRET),
+    allowUnsignedCron: process.env.ALLOW_VERCEL_INTERNAL_CRON === "1",
+    vercelIdPresent: Boolean(vercelId),
+    vercelIdPrefix: vercelId ? vercelId.slice(0, 16) : null,
     headerNames,
   });
 }
@@ -159,6 +164,8 @@ export async function GET(request: Request) {
   const cronSecret = process.env.VERCEL_CRON_SECRET || runSecret;
   const signature = request.headers.get("x-vercel-signature");
   const cronHeader = request.headers.get("x-vercel-cron");
+  const allowUnsigned = process.env.ALLOW_VERCEL_INTERNAL_CRON === "1";
+  const vercelId = request.headers.get("x-vercel-id");
 
   logAuthProbe({
     route: "digest-run",
@@ -168,10 +175,13 @@ export async function GET(request: Request) {
     providedSecret,
     bearerToken,
     headerNames: Array.from(request.headers.keys()).slice(0, 20),
+    vercelId,
   });
 
   const cronMatch = await (async () => {
-    if (!cronSecret || !signature || !cronHeader) return false;
+    if (!cronSecret) return false;
+    if (allowUnsigned && vercelId && !signature) return true;
+    if (!signature || !cronHeader) return false;
     const body = await request.clone().text();
     const digest = createHmac("sha256", cronSecret).update(body).digest();
 
