@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { randomBytes } from "crypto";
+import { randomBytes, createHmac, timingSafeEqual } from "crypto";
 import { createClient } from "@supabase/supabase-js";
 import { signPayload, type TokenPayload } from "@/lib/tokens";
 
@@ -121,7 +121,37 @@ export async function GET(request: Request) {
   const providedSecret = url.searchParams.get("secret") || "";
   const authHeader = request.headers.get("authorization") || "";
   const bearerToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
-  const hasValidSecret = runSecret && (providedSecret === runSecret || bearerToken === runSecret);
+  const manualMatch = runSecret && (providedSecret === runSecret || bearerToken === runSecret);
+
+  const cronSecret = process.env.VERCEL_CRON_SECRET || runSecret;
+  const signature = request.headers.get("x-vercel-signature");
+  const cronHeader = request.headers.get("x-vercel-cron");
+
+  const cronMatch = await (async () => {
+    if (!cronSecret || !signature || !cronHeader) return false;
+    const body = await request.clone().text();
+    const digest = createHmac("sha256", cronSecret).update(body).digest();
+
+    const signatures = [signature.trim()];
+    if (signature.startsWith("sha256=")) signatures.push(signature.slice(7));
+    if (signature.startsWith("sha1=")) signatures.push(signature.slice(5));
+
+    for (const candidate of signatures) {
+      try {
+        const provided = Buffer.from(candidate, "hex");
+        if (provided.length === digest.length && timingSafeEqual(provided, digest)) return true;
+      } catch {}
+
+      try {
+        const provided = Buffer.from(candidate, "base64");
+        if (provided.length === digest.length && timingSafeEqual(provided, digest)) return true;
+      } catch {}
+    }
+
+    return false;
+  })();
+
+  const hasValidSecret = manualMatch || cronMatch;
   if (!hasValidSecret) {
     return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
   }
