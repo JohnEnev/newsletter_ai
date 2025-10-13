@@ -5,39 +5,6 @@ import { gatherArticles, ingestArticles, sampleDataPath } from "@/lib/server/art
 
 export const runtime = "nodejs";
 
-function logAuthProbe({
-  route,
-  cronHeader,
-  signature,
-  requiredSecret,
-  providedSecret,
-  headerNames,
-  vercelId,
-}: {
-  route: string;
-  cronHeader: string | null;
-  signature: string | null;
-  requiredSecret: string;
-  providedSecret: string;
-  headerNames: string[];
-  vercelId: string | null;
-}) {
-  console.log(`[${route}] auth probe`, {
-    cronHeader,
-    signaturePresent: Boolean(signature),
-    signatureLength: signature?.length ?? 0,
-    signaturePrefix: signature ? signature.slice(0, 6) : null,
-    requiredSecretPresent: Boolean(requiredSecret),
-    providedSecretPresent: Boolean(providedSecret),
-    providedSecretLength: providedSecret ? providedSecret.length : 0,
-    cronSecretPresent: Boolean(process.env.VERCEL_CRON_SECRET),
-    allowUnsignedCron: process.env.ALLOW_VERCEL_INTERNAL_CRON === "1",
-    vercelIdPresent: Boolean(vercelId),
-    vercelIdPrefix: vercelId ? vercelId.slice(0, 16) : null,
-    headerNames,
-  });
-}
-
 function readSecret(request: Request, url: URL) {
   const header = request.headers.get("authorization") || "";
   const bearer = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
@@ -102,15 +69,6 @@ export async function GET(request: Request) {
   const url = new URL(request.url);
   const requiredSecret = process.env.ARTICLES_SYNC_SECRET || process.env.CRON_SECRET || "";
   const providedSecret = readSecret(request, url);
-  logAuthProbe({
-    route: "articles-sync",
-    cronHeader: request.headers.get("x-vercel-cron"),
-    signature: request.headers.get("x-vercel-signature"),
-    requiredSecret,
-    providedSecret,
-    headerNames: Array.from(request.headers.keys()).slice(0, 20),
-    vercelId: request.headers.get("x-vercel-id"),
-  });
   const authorized = (requiredSecret && providedSecret === requiredSecret)
     || (await isValidCronRequest(request, requiredSecret));
   if (!authorized) {

@@ -23,43 +23,6 @@ type ArticleRow = {
 
 const RESEND_ENDPOINT = "https://api.resend.com/emails";
 
-function logAuthProbe({
-  route,
-  cronHeader,
-  signature,
-  requiredSecret,
-  providedSecret,
-  bearerToken,
-  headerNames,
-  vercelId,
-}: {
-  route: string;
-  cronHeader: string | null;
-  signature: string | null;
-  requiredSecret: string;
-  providedSecret: string;
-  bearerToken: string;
-  headerNames: string[];
-  vercelId: string | null;
-}) {
-  console.log(`[${route}] auth probe`, {
-    cronHeader,
-    signaturePresent: Boolean(signature),
-    signatureLength: signature?.length ?? 0,
-    signaturePrefix: signature ? signature.slice(0, 6) : null,
-    requiredSecretPresent: Boolean(requiredSecret),
-    providedSecretPresent: Boolean(providedSecret),
-    providedSecretLength: providedSecret ? providedSecret.length : 0,
-    bearerTokenPresent: Boolean(bearerToken),
-    bearerTokenLength: bearerToken ? bearerToken.length : 0,
-    cronSecretPresent: Boolean(process.env.VERCEL_CRON_SECRET),
-    allowUnsignedCron: process.env.ALLOW_VERCEL_INTERNAL_CRON === "1",
-    vercelIdPresent: Boolean(vercelId),
-    vercelIdPrefix: vercelId ? vercelId.slice(0, 16) : null,
-    headerNames,
-  });
-}
-
 function getTimeInTimezone(timeZone: string, reference: Date) {
   try {
     const formatter = new Intl.DateTimeFormat("en-US", {
@@ -166,17 +129,6 @@ export async function GET(request: Request) {
   const cronHeader = request.headers.get("x-vercel-cron");
   const allowUnsigned = process.env.ALLOW_VERCEL_INTERNAL_CRON === "1";
   const vercelId = request.headers.get("x-vercel-id");
-
-  logAuthProbe({
-    route: "digest-run",
-    cronHeader,
-    signature,
-    requiredSecret: runSecret,
-    providedSecret,
-    bearerToken,
-    headerNames: Array.from(request.headers.keys()).slice(0, 20),
-    vercelId,
-  });
 
   const cronMatch = await (async () => {
     if (!cronSecret) return false;
