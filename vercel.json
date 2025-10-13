@@ -1,11 +1,11 @@
 {
   "crons": [
          {
-           "path": "/api/digest/run?secret=${VERCEL_CRON_SECRET}",
+           "path": "/api/digest/run",
            "schedule": "*/15 * * * *"
          },
          {
-           "path": "/api/articles/sync?secret=${VERCEL_CRON_SECRET}",
+           "path": "/api/articles/sync",
            "schedule": "0 0 * * *"
          }
        ]
