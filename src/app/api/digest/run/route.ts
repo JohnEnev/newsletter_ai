@@ -30,6 +30,7 @@ function logAuthProbe({
   requiredSecret,
   providedSecret,
   bearerToken,
+  headerNames,
 }: {
   route: string;
   cronHeader: string | null;
@@ -37,6 +38,7 @@ function logAuthProbe({
   requiredSecret: string;
   providedSecret: string;
   bearerToken: string;
+  headerNames: string[];
 }) {
   console.log(`[${route}] auth probe`, {
     cronHeader,
@@ -49,6 +51,7 @@ function logAuthProbe({
     bearerTokenPresent: Boolean(bearerToken),
     bearerTokenLength: bearerToken ? bearerToken.length : 0,
     cronSecretPresent: Boolean(process.env.VERCEL_CRON_SECRET),
+    headerNames,
   });
 }
 
@@ -164,6 +167,7 @@ export async function GET(request: Request) {
     requiredSecret: runSecret,
     providedSecret,
     bearerToken,
+    headerNames: Array.from(request.headers.keys()).slice(0, 20),
   });
 
   const cronMatch = await (async () => {
