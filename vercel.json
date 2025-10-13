@@ -1,12 +1,14 @@
 {
   "crons": [
-    {
-      "path": "/api/digest/run",
-      "schedule": "*/15 * * * *"
-    },
-    {
-      "path": "/api/articles/sync",
-      "schedule": "0 0 * * *"
-    }
-  ]
+         {
+           "path": "/api/digest/run",
+           "schedule": "*/15 * * * *",
+           "headers": { "Authorization": "Bearer ${VERCEL_CRON_SECRET}" }
+         },
+         {
+           "path": "/api/articles/sync",
+           "schedule": "0 0 * * *",
+           "headers": { "Authorization": "Bearer ${VERCEL_CRON_SECRET}" }
+         }
+       ]
 }
