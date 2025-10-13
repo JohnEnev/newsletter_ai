@@ -23,6 +23,35 @@ type ArticleRow = {
 
 const RESEND_ENDPOINT = "https://api.resend.com/emails";
 
+function logAuthProbe({
+  route,
+  cronHeader,
+  signature,
+  requiredSecret,
+  providedSecret,
+  bearerToken,
+}: {
+  route: string;
+  cronHeader: string | null;
+  signature: string | null;
+  requiredSecret: string;
+  providedSecret: string;
+  bearerToken: string;
+}) {
+  console.log(`[${route}] auth probe`, {
+    cronHeader,
+    signaturePresent: Boolean(signature),
+    signatureLength: signature?.length ?? 0,
+    signaturePrefix: signature ? signature.slice(0, 6) : null,
+    requiredSecretPresent: Boolean(requiredSecret),
+    providedSecretPresent: Boolean(providedSecret),
+    providedSecretLength: providedSecret ? providedSecret.length : 0,
+    bearerTokenPresent: Boolean(bearerToken),
+    bearerTokenLength: bearerToken ? bearerToken.length : 0,
+    cronSecretPresent: Boolean(process.env.VERCEL_CRON_SECRET),
+  });
+}
+
 function getTimeInTimezone(timeZone: string, reference: Date) {
   try {
     const formatter = new Intl.DateTimeFormat("en-US", {
@@ -127,6 +156,15 @@ export async function GET(request: Request) {
   const cronSecret = process.env.VERCEL_CRON_SECRET || runSecret;
   const signature = request.headers.get("x-vercel-signature");
   const cronHeader = request.headers.get("x-vercel-cron");
+
+  logAuthProbe({
+    route: "digest-run",
+    cronHeader,
+    signature,
+    requiredSecret: runSecret,
+    providedSecret,
+    bearerToken,
+  });
 
   const cronMatch = await (async () => {
     if (!cronSecret || !signature || !cronHeader) return false;
