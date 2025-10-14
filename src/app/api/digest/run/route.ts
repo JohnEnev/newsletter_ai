@@ -41,11 +41,11 @@ function getTimeInTimezone(timeZone: string, reference: Date) {
   }
 }
 
-function minutesBetween(targetHour: number, targetMinute: number, currentHour: number, currentMinute: number) {
+function minutesSinceTarget(targetHour: number, targetMinute: number, currentHour: number, currentMinute: number) {
   const targetTotal = targetHour * 60 + targetMinute;
   const currentTotal = currentHour * 60 + currentMinute;
-  const diff = Math.abs(targetTotal - currentTotal);
-  return Math.min(diff, 1440 - diff);
+  const diff = (currentTotal - targetTotal + 1440) % 1440;
+  return diff;
 }
 
 function buildDigestHtml({
@@ -208,8 +208,8 @@ export async function GET(request: Request) {
     const targetHour = typeof pref.send_hour === "number" ? pref.send_hour : 9;
     const targetMinute = typeof pref.send_minute === "number" ? pref.send_minute : 0;
     const current = getTimeInTimezone(timezone, now);
-    const diff = minutesBetween(targetHour, targetMinute, current.hour, current.minute);
-    return diff <= windowMinutes;
+    const minutesElapsed = minutesSinceTarget(targetHour, targetMinute, current.hour, current.minute);
+    return minutesElapsed < windowMinutes;
   });
 
   if (duePrefs.length === 0) {
