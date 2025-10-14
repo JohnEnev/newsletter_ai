@@ -3,8 +3,11 @@ import path from "path";
 
 const DEFAULT_FEEDS = [
   "https://hnrss.org/frontpage",
-  "https://rss.nytimes.com/services/xml/rss/nyt/Technology.xml",
+  "https://rss.nytimes.com/services/xml/rss/nyt/Technology.xml", 
   "https://www.producthunt.com/feed",
+  "https://www.theverge.com/rss/index.xml",
+  "https://www.technologyreview.com/feed/",
+  "https://feeds.feedburner.com/TechCrunch/startups",
 ];
 
 const STOP_WORDS = new Set([

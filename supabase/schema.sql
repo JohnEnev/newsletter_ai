@@ -58,6 +58,15 @@ create table if not exists public.used_nonces (
   used_at timestamptz not null default now()
 );
 
+alter table public.used_nonces enable row level security;
+
+drop policy if exists "Service role inserts nonces" on public.used_nonces;
+create policy "Service role inserts nonces"
+  on public.used_nonces
+  for all
+  using (false)
+  with check (false);
+
 drop policy if exists "Users can update own prefs" on public.user_prefs;
 create policy "Users can update own prefs"
   on public.user_prefs
