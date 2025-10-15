@@ -182,6 +182,9 @@ async function fetchRss(feedUrl) {
     }
     const xml = await res.text();
     const items = parseFeedEntries(xml);
+    if (items.length === 0) {
+      console.warn(`[warn] No entries found in feed ${feedUrl}`);
+    }
     return items
       .map((item) => {
         const title = extractTag(item, "title").trim();
@@ -264,10 +267,14 @@ export async function gatherArticles({ feedUrls = [], noDefaultFeeds = false, so
   const articles = [];
   for (const feed of feeds) {
     const parsed = await fetchRss(feed);
+    if (parsed.length === 0) {
+      console.warn(`[warn] Parsed 0 articles from ${feed}`);
+    }
     articles.push(...parsed);
   }
 
-  if (articles.length < 5) {
+  if (articles.length === 0) {
+    console.warn("[warn] Using fallback articles (no feeds returned entries)");
     articles.push(...loadLocalArticles(sourceFile));
   }
 
