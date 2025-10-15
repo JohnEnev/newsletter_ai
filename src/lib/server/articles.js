@@ -124,11 +124,15 @@ function keywordTags(title = "", summary = "") {
     .map(([term]) => term);
 }
 
-function parseRssItems(xml) {
+function parseFeedEntries(xml) {
   const items = [];
-  const itemRegex = /<item[\s\S]*?<\/item>/gi;
+  const rssRegex = /<item[\s\S]*?<\/item>/gi;
+  const atomRegex = /<entry[\s\S]*?<\/entry>/gi;
   let match;
-  while ((match = itemRegex.exec(xml))) {
+  while ((match = rssRegex.exec(xml))) {
+    items.push(match[0]);
+  }
+  while ((match = atomRegex.exec(xml))) {
     items.push(match[0]);
   }
   return items;
@@ -139,6 +143,31 @@ function extractTag(xml, tag) {
   const match = xml.match(regex);
   if (!match) return "";
   return decodeHtml(match[1]);
+}
+
+function extractLinkFromSelfClosingTag(xml) {
+  const match = xml.match(/<link\b([^>]*)\/?>(?:\s*<\/link>)?/i);
+  if (!match) return "";
+  const attrs = match[1] || "";
+  const hrefMatch = attrs.match(/href=["']([^"']+)["']/i);
+  if (!hrefMatch) return "";
+  return decodeHtml(hrefMatch[1]);
+}
+
+function extractLink(xml) {
+  const direct = extractTag(xml, "link").trim();
+  if (direct) return direct;
+
+  const candidates = xml.matchAll(/<link\b([^>]*)\/?>(?:\s*<\/link>)?/gi);
+  for (const candidate of candidates) {
+    const attrs = candidate[1] || "";
+    const relMatch = attrs.match(/rel=["']([^"']+)["']/i);
+    if (relMatch && relMatch[1].toLowerCase() !== "alternate") continue;
+    const hrefMatch = attrs.match(/href=["']([^"']+)["']/i);
+    if (hrefMatch) return decodeHtml(hrefMatch[1]);
+  }
+
+  return extractLinkFromSelfClosingTag(xml);
 }
 
 async function fetchRss(feedUrl) {
@@ -152,14 +181,18 @@ async function fetchRss(feedUrl) {
       return [];
     }
     const xml = await res.text();
-    const items = parseRssItems(xml);
+    const items = parseFeedEntries(xml);
     return items
       .map((item) => {
         const title = extractTag(item, "title").trim();
-        const link = extractTag(item, "link").trim();
-        const description = extractTag(item, "description") || extractTag(item, "content:encoded");
+        const link = extractLink(item).trim();
+        const description =
+          extractTag(item, "description")
+          || extractTag(item, "content:encoded")
+          || extractTag(item, "summary")
+          || extractTag(item, "content");
         const summary = summarise(description);
-        const url = link || extractTag(item, "guid");
+        const url = link || extractTag(item, "guid") || extractTag(item, "id");
         if (!title || !url) return null;
         const tags = keywordTags(title, summary ?? "");
         const hostname = (() => {
