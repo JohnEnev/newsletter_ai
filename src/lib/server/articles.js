@@ -219,7 +219,7 @@ async function fetchRss(feedUrl) {
   try {
     const res = await fetch(feedUrl, {
       headers: { "User-Agent": "newsletter-ai-fetcher" },
-      next: { revalidate: 0 },
+      cache: 'no-store',
     });
     if (!res.ok) {
       console.warn(`[warn] Failed to fetch ${feedUrl}: ${res.status}`);
@@ -276,6 +276,9 @@ async function fetchRss(feedUrl) {
       .filter(Boolean);
   } catch (err) {
     console.warn(`[warn] Exception fetching ${feedUrl}: ${err instanceof Error ? err.message : err}`);
+    if (err instanceof Error && err.cause) {
+      console.warn(`[warn]   cause: ${String(err.cause)}`);
+    }
     return [];
   }
 }
