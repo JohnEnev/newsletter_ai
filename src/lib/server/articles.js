@@ -1,5 +1,6 @@
 import fs from "fs";
 import path from "path";
+import { XMLParser } from "fast-xml-parser";
 
 const DEFAULT_FEEDS = [
   "https://hnrss.org/frontpage",
@@ -124,51 +125,95 @@ function keywordTags(title = "", summary = "") {
     .map(([term]) => term);
 }
 
-function parseFeedEntries(xml) {
-  const items = [];
-  const rssRegex = /<item[\s\S]*?<\/item>/gi;
-  const atomRegex = /<entry[\s\S]*?<\/entry>/gi;
-  let match;
-  while ((match = rssRegex.exec(xml))) {
-    items.push(match[0]);
+const xmlParser = new XMLParser({
+  ignoreAttributes: false,
+  attributeNamePrefix: "",
+  trimValues: true,
+  cdataTagName: "__cdata",
+  processEntities: true,
+});
+
+function toArray(value) {
+  if (Array.isArray(value)) return value;
+  if (value === null || value === undefined) return [];
+  return [value];
+}
+
+function extractText(node) {
+  if (node === null || node === undefined) return "";
+  if (typeof node === "string") return node;
+  if (Array.isArray(node)) {
+    for (const part of node) {
+      const val = extractText(part);
+      if (val) return val;
+    }
+    return "";
   }
-  while ((match = atomRegex.exec(xml))) {
-    items.push(match[0]);
+  if (typeof node === "object") {
+    if (typeof node.__cdata === "string") return node.__cdata;
+    if (typeof node["#text"] === "string") return node["#text"];
+    if (typeof node["$text"] === "string") return node["$text"];
   }
-  return items;
+  return "";
 }
 
-function extractTag(xml, tag) {
-  const regex = new RegExp(`<${tag}[^>]*>([\s\S]*?)<\/${tag}>`, "i");
-  const match = xml.match(regex);
-  if (!match) return "";
-  return decodeHtml(match[1]);
-}
-
-function extractLinkFromSelfClosingTag(xml) {
-  const match = xml.match(/<link\b([^>]*)\/?>(?:\s*<\/link>)?/i);
-  if (!match) return "";
-  const attrs = match[1] || "";
-  const hrefMatch = attrs.match(/href=["']([^"']+)["']/i);
-  if (!hrefMatch) return "";
-  return decodeHtml(hrefMatch[1]);
-}
-
-function extractLink(xml) {
-  const direct = extractTag(xml, "link").trim();
-  if (direct) return direct;
-
-  const candidates = xml.matchAll(/<link\b([^>]*)\/?>(?:\s*<\/link>)?/gi);
+function extractLinkValue(node) {
+  if (!node) return "";
+  const candidates = toArray(node);
   for (const candidate of candidates) {
-    const attrs = candidate[1] || "";
-    const relMatch = attrs.match(/rel=["']([^"']+)["']/i);
-    if (relMatch && relMatch[1].toLowerCase() !== "alternate") continue;
-    const hrefMatch = attrs.match(/href=["']([^"']+)["']/i);
-    if (hrefMatch) return decodeHtml(hrefMatch[1]);
+    if (!candidate) continue;
+    if (typeof candidate === "string") {
+      const trimmed = candidate.trim();
+      if (trimmed) return trimmed;
+      continue;
+    }
+    if (typeof candidate === "object") {
+      const href = typeof candidate.href === "string" ? candidate.href.trim() : "";
+      const rel = typeof candidate.rel === "string" ? candidate.rel.toLowerCase() : "";
+      if (href && (!rel || rel === "alternate" || rel === "self")) return href;
+      const text = extractText(candidate).trim();
+      if (text) return text;
+      if (href) return href;
+    }
   }
-
-  return extractLinkFromSelfClosingTag(xml);
+  return "";
 }
+
+function parseFeedEntries(xml, feedUrl) {
+  try {
+    const doc = xmlParser.parse(xml);
+    const entries = [];
+
+    if (doc?.rss?.channel) {
+      for (const channel of toArray(doc.rss.channel)) {
+        entries.push(...toArray(channel?.item).map((entry) => ({ type: "rss", entry })));
+      }
+    }
+
+    if (doc?.channel) {
+      for (const channel of toArray(doc.channel)) {
+        entries.push(...toArray(channel?.item).map((entry) => ({ type: "rss", entry })));
+      }
+    }
+
+    if (doc?.feed) {
+      for (const feed of toArray(doc.feed)) {
+        entries.push(...toArray(feed?.entry).map((entry) => ({ type: "atom", entry })));
+      }
+    }
+
+    if (entries.length === 0) {
+      const snippet = String(xml).slice(0, 400).replace(/\s+/g, ' ');
+      console.warn(`[warn] No entries found in feed ${feedUrl}. Snippet: ${snippet}`);
+    }
+
+    return entries;
+  } catch (err) {
+    console.warn(`[warn] Failed to parse feed ${feedUrl}: ${err instanceof Error ? err.message : err}`);
+    return [];
+  }
+}
+
 
 async function fetchRss(feedUrl) {
   try {
@@ -181,28 +226,43 @@ async function fetchRss(feedUrl) {
       return [];
     }
     const xml = await res.text();
-    const items = parseFeedEntries(xml);
-    if (items.length === 0) {
-      console.warn(`[warn] No entries found in feed ${feedUrl}`);
-    }
-    return items
-      .map((item) => {
-        const title = extractTag(item, "title").trim();
-        const link = extractLink(item).trim();
+    const entries = parseFeedEntries(xml, feedUrl);
+    if (entries.length === 0) return [];
+
+    return entries
+      .map(({ entry }) => {
+        const rawTitle = extractText(entry?.title);
+        const rawLink = extractLinkValue(entry?.link);
+        const rawGuid = extractText(entry?.guid);
+        const rawId = extractText(entry?.id);
+        const title = decodeHtml(rawTitle).trim();
+        const link = decodeHtml(rawLink).trim();
+        const fallbackUrl = decodeHtml(rawGuid || rawId).trim();
+        const url = link || fallbackUrl;
         const description =
-          extractTag(item, "description")
-          || extractTag(item, "content:encoded")
-          || extractTag(item, "summary")
-          || extractTag(item, "content");
+          extractText(entry?.description)
+          || extractText(entry?.summary)
+          || extractText(entry?.content)
+          || extractText(entry?.subtitle)
+          || extractText(entry && entry["content:encoded"])
+          || extractText(entry && entry.encoded);
         const summary = summarise(description);
-        const url = link || extractTag(item, "guid") || extractTag(item, "id");
-        if (!title || !url) return null;
+        if (!title || !url) {
+          const snippet = JSON.stringify(entry).slice(0, 200);
+          const reason = !title ? "title" : "url";
+          console.warn(`[warn] Entry missing ${reason} in ${feedUrl}: ${snippet}`);
+          return null;
+        }
         const tags = keywordTags(title, summary ?? "");
         const hostname = (() => {
           try {
             return new URL(url).hostname;
           } catch {
-            return new URL(feedUrl).hostname;
+            try {
+              return new URL(feedUrl).hostname;
+            } catch {
+              return "unknown";
+            }
           }
         })();
         return {
