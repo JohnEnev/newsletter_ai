@@ -22,6 +22,7 @@ type ParsedPrefs = {
   timeline: string;
   sendTime: string;
   timezone: string;
+  applyPrefs: boolean;
 };
 
 function deriveErrorMessage(error: unknown, fallback: string) {
@@ -32,7 +33,7 @@ function deriveErrorMessage(error: unknown, fallback: string) {
 
 function parseStoredPrefs(raw: string | null): ParsedPrefs {
   if (!raw) {
-    return { interests: "", timeline: "", sendTime: "", timezone: "" };
+    return { interests: "", timeline: "", sendTime: "", timezone: "", applyPrefs: false };
   }
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown>;
@@ -41,9 +42,10 @@ function parseStoredPrefs(raw: string | null): ParsedPrefs {
       timeline: typeof parsed.timeline === "string" ? parsed.timeline : "",
       sendTime: typeof parsed.sendTime === "string" ? parsed.sendTime : "",
       timezone: typeof parsed.timezone === "string" ? parsed.timezone : "",
+      applyPrefs: parsed.applyPrefs === true,
     };
   } catch {
-    return { interests: "", timeline: "", sendTime: "", timezone: "" };
+    return { interests: "", timeline: "", sendTime: "", timezone: "", applyPrefs: false };
   }
 }
 
@@ -106,28 +108,33 @@ export default function AuthCallbackPage() {
         if (userError) throw userError;
         if (!user) throw new Error("No user after sign-in");
 
-        setStatus({ state: "working", message: "Saving your preferences…" });
-
         const raw = localStorage.getItem("pendingSignupPrefs");
-        const { interests, timeline, sendTime, timezone } = parseStoredPrefs(raw);
-        const { hour: sendHour, minute: sendMinute } = parseSendTime(sendTime);
-        const tzFromClient = timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-        const interestText = interests.trim();
-        const timelineText = timeline.trim();
+        const parsedPrefs = parseStoredPrefs(raw);
+        setStatus({
+          state: "working",
+          message: parsedPrefs.applyPrefs ? "Saving your preferences…" : "Finishing sign-in…",
+        });
+        if (parsedPrefs.applyPrefs) {
+          const { interests, timeline, sendTime, timezone } = parsedPrefs;
+          const { hour: sendHour, minute: sendMinute } = parseSendTime(sendTime);
+          const tzFromClient = timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+          const interestText = interests.trim();
+          const timelineText = timeline.trim();
 
-        const { error: upsertError } = await supabase
-          .from("user_prefs")
-          .upsert({
-            user_id: user.id,
-            interests: interestText,
-            timeline: timelineText,
-            send_hour: sendHour,
-            send_minute: sendMinute,
-            send_timezone: tzFromClient,
-          })
-          .select()
-          .single();
-        if (upsertError) throw upsertError;
+          const { error: upsertError } = await supabase
+            .from("user_prefs")
+            .upsert({
+              user_id: user.id,
+              interests: interestText,
+              timeline: timelineText,
+              send_hour: sendHour,
+              send_minute: sendMinute,
+              send_timezone: tzFromClient,
+            })
+            .select()
+            .single();
+          if (upsertError) throw upsertError;
+        }
 
         localStorage.removeItem("pendingSignupPrefs");
 
