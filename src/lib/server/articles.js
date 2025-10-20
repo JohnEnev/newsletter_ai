@@ -125,6 +125,15 @@ function keywordTags(title = "", summary = "") {
     .map(([term]) => term);
 }
 
+function derivePrimaryTag(tags) {
+  if (!Array.isArray(tags)) return null;
+  for (const tag of tags) {
+    const clean = String(tag ?? "").trim().toLowerCase();
+    if (clean) return clean;
+  }
+  return null;
+}
+
 const xmlParser = new XMLParser({
   ignoreAttributes: false,
   attributeNamePrefix: "",
@@ -376,13 +385,19 @@ export async function ingestArticles({ supabase, articles, dryRun = false }) {
         continue;
       }
 
+      const tags = Array.isArray(article.tags)
+        ? article.tags
+            .map((tag) => String(tag ?? "").trim().toLowerCase())
+            .filter((tag) => tag.length > 0)
+        : [];
       const { error } = await supabase
         .from("articles")
         .insert({
           title: article.title,
           url: article.url,
           summary: article.summary,
-          tags: article.tags,
+          tags,
+          primary_tag: derivePrimaryTag(tags),
           source: article.source,
         });
       if (error) {

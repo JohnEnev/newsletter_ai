@@ -112,13 +112,15 @@ export default function AuthCallbackPage() {
         const { interests, timeline, sendTime, timezone } = parseStoredPrefs(raw);
         const { hour: sendHour, minute: sendMinute } = parseSendTime(sendTime);
         const tzFromClient = timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+        const interestText = interests.trim();
+        const timelineText = timeline.trim();
 
         const { error: upsertError } = await supabase
           .from("user_prefs")
           .upsert({
             user_id: user.id,
-            interests,
-            timeline,
+            interests: interestText,
+            timeline: timelineText,
             send_hour: sendHour,
             send_minute: sendMinute,
             send_timezone: tzFromClient,
