@@ -162,13 +162,15 @@ export default async function ManagePage({ searchParams }: PageProps) {
     }
 
     const { hour: sendHour, minute: sendMinute } = parseTimeInput(sendTimeRaw);
+    const interestText = interests.trim();
+    const timelineText = timeline.trim();
 
     await adminClient
       .from("user_prefs")
       .upsert({
         user_id: userId,
-        interests,
-        timeline,
+        interests: interestText,
+        timeline: timelineText,
         unsubscribed: unsub,
         send_hour: sendHour,
         send_minute: sendMinute,

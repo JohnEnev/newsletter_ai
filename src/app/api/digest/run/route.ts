@@ -3,6 +3,7 @@ import { randomBytes, createHmac } from "crypto";
 import { timingSafeEqual } from "crypto";
 import { createClient } from "@supabase/supabase-js";
 import { signPayload, type TokenPayload } from "@/lib/tokens";
+import { extractInterestTokens } from "@/lib/interests";
 
 type PrefRow = {
   user_id: string;
@@ -19,6 +20,8 @@ type ArticleRow = {
   title: string;
   url: string;
   summary: string | null;
+  tags: string[] | null;
+  primary_tag: string | null;
 };
 
 const RESEND_ENDPOINT = "https://api.resend.com/emails";
@@ -46,6 +49,85 @@ function minutesSinceTarget(targetHour: number, targetMinute: number, currentHou
   const currentTotal = currentHour * 60 + currentMinute;
   const diff = (currentTotal - targetTotal + 1440) % 1440;
   return diff;
+}
+
+const ARTICLES_PER_USER = 5;
+const ARTICLE_POOL_LIMIT = 40;
+
+type PreparedArticle = ArticleRow & {
+  normalizedTags: string[];
+  titleLc: string;
+  summaryLc: string;
+};
+
+function normaliseArticle(row: ArticleRow): PreparedArticle {
+  const normalizedTags = Array.isArray(row.tags)
+    ? row.tags
+        .map((tag) => String(tag ?? "").trim().toLowerCase())
+        .filter((tag) => tag.length > 0)
+    : [];
+  const primary = typeof row.primary_tag === "string" ? row.primary_tag.trim().toLowerCase() : "";
+  if (primary && !normalizedTags.includes(primary)) {
+    normalizedTags.unshift(primary);
+  }
+  return {
+    ...row,
+    normalizedTags,
+    titleLc: row.title?.toLowerCase?.() ?? "",
+    summaryLc: row.summary?.toLowerCase?.() ?? "",
+  };
+}
+
+function articleMatchesTokens(article: PreparedArticle, tokens: string[]) {
+  if (tokens.length === 0) return false;
+  for (const token of tokens) {
+    if (!token) continue;
+    if (article.normalizedTags.some((tag) => tag === token || tag.includes(token) || token.includes(tag))) {
+      return true;
+    }
+    if (article.titleLc.includes(token)) return true;
+    if (article.summaryLc.includes(token)) return true;
+  }
+  return false;
+}
+
+function selectArticlesForPref(pref: PrefRow, pool: PreparedArticle[]) {
+  const tokens = extractInterestTokens(pref.interests, { maxTokens: 20 });
+  const matches: PreparedArticle[] = [];
+  const fallback: PreparedArticle[] = [];
+
+  for (const article of pool) {
+    if (tokens.length > 0 && articleMatchesTokens(article, tokens)) {
+      matches.push(article);
+    } else {
+      fallback.push(article);
+    }
+  }
+
+  const selection: PreparedArticle[] = [];
+  const seen = new Set<string>();
+
+  const pushArticle = (article: PreparedArticle) => {
+    if (selection.length >= ARTICLES_PER_USER) return;
+    if (seen.has(article.id)) return;
+    selection.push(article);
+    seen.add(article.id);
+  };
+
+  for (const article of matches) {
+    pushArticle(article);
+    if (selection.length >= ARTICLES_PER_USER) break;
+  }
+
+  if (selection.length < ARTICLES_PER_USER) {
+    const fillerSource = tokens.length === 0 ? pool : fallback;
+    for (const article of fillerSource) {
+      pushArticle(article);
+      if (selection.length >= ARTICLES_PER_USER) break;
+    }
+  }
+
+  return { articles: selection, matched: matches.length > 0 && tokens.length > 0, tokens };
 }
 
 function buildDigestHtml({
@@ -85,6 +167,13 @@ function buildDigestHtml({
     })
     .join("\n");
 
+  const articleRows = itemsHtml
+    || `<tr>
+          <td style="padding:12px 0; color:#555; font-size:14px;">
+            We didn’t find fresh articles that match your interests today, but we’ll keep looking.
+          </td>
+        </tr>`;
+
   return `<!doctype html>
 <html>
   <head>
@@ -104,7 +193,7 @@ function buildDigestHtml({
           </div>
         </td>
       </tr>
-      ${itemsHtml}
+      ${articleRows}
       <tr>
         <td style="padding-top:16px;border-top:1px solid #e5e7eb;">
           <div style="font-size:12px;color:#6b7280;">Manage Preferences: <a href="${manageUrl}" style="color:#2563eb;">link</a></div>
@@ -218,13 +307,14 @@ export async function GET(request: Request) {
 
   const { data: rawArticles, error: artErr } = await admin
     .from("articles")
-    .select("id, title, url, summary")
+    .select("id, title, url, summary, tags, primary_tag")
     .order("created_at", { ascending: false })
-    .limit(5);
+    .limit(ARTICLE_POOL_LIMIT);
   if (artErr) {
     return NextResponse.json({ ok: false, error: artErr.message }, { status: 500 });
   }
   const articles = (rawArticles ?? []) as ArticleRow[];
+  const preparedArticles = articles.map(normaliseArticle);
 
   const { data: userList } = await admin.auth.admin.listUsers({ page: 1, perPage: 2000 });
   const emailLookup = new Map<string, string>();
@@ -234,7 +324,14 @@ export async function GET(request: Request) {
     }
   }
 
-  const results: Array<{ userId: string; email?: string; status: "sent" | "skipped" | "dry"; error?: string }> = [];
+  const results: Array<{
+    userId: string;
+    email?: string;
+    status: "sent" | "skipped" | "dry";
+    error?: string;
+    matched?: boolean;
+    articleCount?: number;
+  }> = [];
 
   for (const pref of duePrefs) {
     const email = emailLookup.get(pref.user_id);
@@ -242,6 +339,9 @@ export async function GET(request: Request) {
       results.push({ userId: pref.user_id, status: "skipped", error: "No email" });
       continue;
     }
+
+    const { articles: selectedArticles, matched } = selectArticlesForPref(pref, preparedArticles);
+    const articleCount = selectedArticles.length;
 
     const manageToken = signPayload<TokenPayload>({
       user_id: pref.user_id,
@@ -268,7 +368,7 @@ export async function GET(request: Request) {
     const resubscribeUrl = makeLink("/unsubscribe", resubscribeToken, "&action=subscribe");
 
     const yesNoLinks: Record<string, { yes: string; no: string }> = {};
-    for (const article of articles) {
+    for (const article of selectedArticles) {
       const yesToken = signPayload<TokenPayload>({
         user_id: pref.user_id,
         exp: Math.floor(Date.now() / 1000) + 7 * 24 * 3600,
@@ -287,13 +387,13 @@ export async function GET(request: Request) {
     }
 
     if (dryRun) {
-      results.push({ userId: pref.user_id, email, status: "dry" });
+      results.push({ userId: pref.user_id, email, status: "dry", matched, articleCount });
       continue;
     }
 
     const html = buildDigestHtml({
       prefs: pref,
-      articles,
+      articles: selectedArticles,
       manageUrl,
       unsubscribeUrl,
       resubscribeUrl,
@@ -311,14 +411,23 @@ export async function GET(request: Request) {
 
     if (!res.ok) {
       const msg = await res.text().catch(() => res.statusText);
-      results.push({ userId: pref.user_id, email, status: "skipped", error: msg });
+      results.push({ userId: pref.user_id, email, status: "skipped", error: msg, matched, articleCount });
     } else {
-      results.push({ userId: pref.user_id, email, status: "sent" });
+      results.push({ userId: pref.user_id, email, status: "sent", matched, articleCount });
     }
   }
 
   const sent = results.filter((r) => r.status === "sent").length;
   const skipped = results.filter((r) => r.status === "skipped");
+  const matchedUsers = results.filter((r) => r.matched).length;
 
-  return NextResponse.json({ ok: true, sent, dryRun, windowMinutes, skipped });
+  return NextResponse.json({
+    ok: true,
+    sent,
+    dryRun,
+    windowMinutes,
+    matchedUsers,
+    totalDue: duePrefs.length,
+    skipped,
+  });
 }

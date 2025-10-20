@@ -128,13 +128,15 @@ export default function SettingsPage() {
       if (!user) throw new Error("Not signed in");
 
       const { hour, minute } = parseTimeInput(sendTime);
+      const interestText = interests.trim();
+      const timelineText = timeline.trim();
 
       const { error } = await supabase
         .from("user_prefs")
         .upsert({
           user_id: user.id,
-          interests,
-          timeline,
+          interests: interestText,
+          timeline: timelineText,
           unsubscribed,
           send_hour: hour,
           send_minute: minute,
@@ -168,13 +170,15 @@ export default function SettingsPage() {
       if (!user) throw new Error("Not signed in");
 
       const { hour, minute } = parseTimeInput(sendTime);
+      const interestText = interests.trim();
+      const timelineText = timeline.trim();
 
       const { error } = await supabase
         .from("user_prefs")
         .upsert({
           user_id: user.id,
-          interests,
-          timeline,
+          interests: interestText,
+          timeline: timelineText,
           unsubscribed: next,
           send_hour: hour,
           send_minute: minute,
