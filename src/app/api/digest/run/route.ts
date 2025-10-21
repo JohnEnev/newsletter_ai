@@ -78,56 +78,69 @@ function normaliseArticle(row: ArticleRow): PreparedArticle {
   };
 }
 
-function articleMatchesTokens(article: PreparedArticle, tokens: string[]) {
-  if (tokens.length === 0) return false;
-  for (const token of tokens) {
-    if (!token) continue;
-    if (article.normalizedTags.some((tag) => tag === token || tag.includes(token) || token.includes(tag))) {
-      return true;
-    }
-    if (article.titleLc.includes(token)) return true;
-    if (article.summaryLc.includes(token)) return true;
+function articleMatchesToken(article: PreparedArticle, token: string) {
+  if (!token) return false;
+  if (article.normalizedTags.some((tag) => tag === token || tag.includes(token) || token.includes(tag))) {
+    return true;
   }
+  if (article.titleLc.includes(token)) return true;
+  if (article.summaryLc.includes(token)) return true;
   return false;
 }
 
 function selectArticlesForPref(pref: PrefRow, pool: PreparedArticle[]) {
-  const tokens = extractInterestTokens(pref.interests, { maxTokens: 20 });
-  const matches: PreparedArticle[] = [];
-  const fallback: PreparedArticle[] = [];
+  const tokens = extractInterestTokens(pref.interests, { maxTokens: 12 });
+  const uniqueTokens = Array.from(new Set(tokens));
+  const desiredFromTokens = uniqueTokens.length > 0 ? uniqueTokens.length : 0;
+  const desiredCount = (() => {
+    if (desiredFromTokens === 0) return Math.min(ARTICLES_PER_USER, Math.max(2, pool.length));
+    return Math.max(2, Math.min(desiredFromTokens, ARTICLES_PER_USER));
+  })();
 
-  for (const article of pool) {
-    if (tokens.length > 0 && articleMatchesTokens(article, tokens)) {
-      matches.push(article);
-    } else {
-      fallback.push(article);
-    }
-  }
+  const buckets = uniqueTokens.map((token) => ({
+    token,
+    articles: pool.filter((article) => articleMatchesToken(article, token)),
+  }));
 
   const selection: PreparedArticle[] = [];
-  const seen = new Set<string>();
+  const used = new Set<string>();
 
-  const pushArticle = (article: PreparedArticle) => {
-    if (selection.length >= ARTICLES_PER_USER) return;
-    if (seen.has(article.id)) return;
-    selection.push(article);
-    seen.add(article.id);
+  const takeFromBucket = (bucket: { token: string; articles: PreparedArticle[] }) => {
+    for (const article of bucket.articles) {
+      if (used.has(article.id)) continue;
+      selection.push(article);
+      used.add(article.id);
+      return true;
+    }
+    return false;
   };
 
-  for (const article of matches) {
-    pushArticle(article);
-    if (selection.length >= ARTICLES_PER_USER) break;
+  for (const bucket of buckets) {
+    if (selection.length >= desiredCount) break;
+    takeFromBucket(bucket);
   }
 
-  if (selection.length < ARTICLES_PER_USER) {
-    const fillerSource = tokens.length === 0 ? pool : fallback;
-    for (const article of fillerSource) {
-      pushArticle(article);
-      if (selection.length >= ARTICLES_PER_USER) break;
+  if (selection.length < desiredCount) {
+    for (const bucket of buckets) {
+      if (selection.length >= desiredCount) break;
+      while (selection.length < desiredCount && takeFromBucket(bucket)) {
+        // continue drawing from this bucket while it has more matches
+      }
     }
   }
 
-  return { articles: selection, matched: matches.length > 0 && tokens.length > 0, tokens };
+  if (selection.length < desiredCount) {
+    for (const article of pool) {
+      if (selection.length >= desiredCount) break;
+      if (used.has(article.id)) continue;
+      selection.push(article);
+      used.add(article.id);
+    }
+  }
+
+  const matched = buckets.some((bucket) => bucket.articles.length > 0);
+
+  return { articles: selection, matched, tokens: uniqueTokens };
 }
 
 function buildDigestHtml({
