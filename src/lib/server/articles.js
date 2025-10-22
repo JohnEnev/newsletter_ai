@@ -40,6 +40,8 @@ const STOP_WORDS = new Set([
   "how",
 ]);
 
+const SHORT_TAGS = new Set(["ai", "vr", "ml", "ux", "ios", "web3", "usa", "eu"]);
+
 const SAMPLE_JSON = path.resolve(process.cwd(), "scripts/data/example-articles.json");
 const FALLBACK_ARTICLES = [
   {
@@ -112,7 +114,7 @@ function keywordTags(title = "", summary = "") {
   const terms = text
     .replace(/[^a-z0-9\s]/g, " ")
     .split(/\s+/)
-    .filter((word) => word.length >= 4 && !STOP_WORDS.has(word));
+    .filter((word) => (word.length >= 4 || SHORT_TAGS.has(word)) && !STOP_WORDS.has(word));
 
   const counts = new Map();
   for (const term of terms) {
@@ -123,6 +125,54 @@ function keywordTags(title = "", summary = "") {
     .sort((a, b) => b[1] - a[1])
     .slice(0, 5)
     .map(([term]) => term);
+}
+
+function splitTagString(value = "") {
+  return value
+    .split(/[,/;|>#]+/)
+    .map((part) => part.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function extractExplicitTags(entry) {
+  const rawTags = new Set();
+  const candidates = [
+    entry?.category,
+    entry?.categories,
+    entry?.Category,
+    entry?.tags,
+    entry?.Topics,
+    entry?.keywords,
+    entry?.Keywords,
+    entry?.topics,
+    entry?.subject,
+    entry?.subjects,
+    entry?.['media:keywords'],
+    entry?.['media:category'],
+    entry?.['dc:subject'],
+    entry?.['dc:terms'],
+  ];
+
+  for (const candidate of candidates) {
+    for (const item of toArray(candidate)) {
+      if (typeof item === 'string') {
+        for (const part of splitTagString(item)) rawTags.add(part);
+        continue;
+      }
+      const text = extractText(item);
+      if (text) {
+        for (const part of splitTagString(text)) rawTags.add(part);
+      }
+      if (item && typeof item.term === 'string') {
+        for (const part of splitTagString(item.term)) rawTags.add(part);
+      }
+      if (item && typeof item.label === 'string') {
+        for (const part of splitTagString(item.label)) rawTags.add(part);
+      }
+    }
+  }
+
+  return Array.from(rawTags.values()).slice(0, 12);
 }
 
 function derivePrimaryTag(tags) {
@@ -262,7 +312,9 @@ async function fetchRss(feedUrl) {
           console.warn(`[warn] Entry missing ${reason} in ${feedUrl}: ${snippet}`);
           return null;
         }
-        const tags = keywordTags(title, summary ?? "");
+        const explicit = extractExplicitTags(entry);
+        const generated = keywordTags(title, summary ?? "");
+        const tags = Array.from(new Set([...explicit, ...generated]));
         const hostname = (() => {
           try {
             return new URL(url).hostname;
@@ -301,13 +353,15 @@ function loadLocalArticles(sourceFile) {
     const txt = fs.readFileSync(candidate, "utf-8");
     const parsed = JSON.parse(txt);
     const list = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.items) ? parsed.items : [];
-    const hydrated = list
-      .map((item) => {
-        const title = String(item.title ?? "").trim();
-        const url = String(item.url ?? "").trim();
-        if (!title || !url) return null;
-        const summary = summarise(item.summary || item.description || "");
-        const tags = Array.isArray(item.tags) ? item.tags.map((t) => String(t)) : keywordTags(title, summary ?? "");
+        const hydrated = list
+          .map((item) => {
+            const title = String(item.title ?? "").trim();
+            const url = String(item.url ?? "").trim();
+            if (!title || !url) return null;
+            const summary = summarise(item.summary || item.description || "");
+            const fallbackTags = Array.isArray(item.tags) ? item.tags.map((t) => String(t)) : [];
+            const generated = keywordTags(title, summary ?? "");
+            const tags = Array.from(new Set([...fallbackTags.map((t) => t.toLowerCase()), ...generated]));
         const source = (() => {
           try {
             return new URL(url).hostname;

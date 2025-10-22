@@ -13,6 +13,7 @@ type PrefRow = {
   send_timezone: string | null;
   send_hour: number | null;
   send_minute: number | null;
+  last_digest_sent_at: string | null;
 };
 
 type ArticleRow = {
@@ -49,6 +50,40 @@ function minutesSinceTarget(targetHour: number, targetMinute: number, currentHou
   const currentTotal = currentHour * 60 + currentMinute;
   const diff = (currentTotal - targetTotal + 1440) % 1440;
   return diff;
+}
+
+function parseFrequencyHours(timeline: string | null | undefined) {
+  if (!timeline) return 24;
+  const value = timeline.toLowerCase();
+  const numericMatch = value.match(/(\d+(?:\.\d+)?)\s*(day|week|month|hour)/);
+  if (numericMatch) {
+    const quantity = Number.parseFloat(numericMatch[1]);
+    const unit = numericMatch[2];
+    if (!Number.isNaN(quantity) && quantity > 0) {
+      if (unit.startsWith("month")) return quantity * 24 * 30;
+      if (unit.startsWith("week")) return quantity * 24 * 7;
+      if (unit.startsWith("day")) return quantity * 24;
+      if (unit.startsWith("hour")) return Math.max(6, quantity);
+    }
+  }
+  if (value.includes("month")) return 24 * 30;
+  if (value.includes("fortnight")) return 24 * 14;
+  if (value.includes("biweek")) return 24 * 3.5;
+  if (value.includes("twice") && value.includes("week")) return 24 * 3;
+  if (value.includes("weekend")) return 24 * 7;
+  if (value.includes("week")) return 24 * 7;
+  if (value.includes("daily") || value.includes("every day")) return 24;
+  if (value.includes("hour")) return 12;
+  if (value.includes("morning")) return 24;
+  if (value.includes("evening")) return 24;
+  return 24;
+}
+
+function hoursSince(dateIso: string | null | undefined, now: Date) {
+  if (!dateIso) return Infinity;
+  const parsed = new Date(dateIso);
+  if (Number.isNaN(parsed.getTime())) return Infinity;
+  return (now.getTime() - parsed.getTime()) / (1000 * 60 * 60);
 }
 
 const ARTICLES_PER_USER = 5;
@@ -91,17 +126,18 @@ function articleMatchesToken(article: PreparedArticle, token: string) {
 function selectArticlesForPref(pref: PrefRow, pool: PreparedArticle[]) {
   const tokens = extractInterestTokens(pref.interests, { maxTokens: 12 });
   const uniqueTokens = Array.from(new Set(tokens));
-  const desiredFromTokens = uniqueTokens.length > 0 ? uniqueTokens.length : 0;
-  const desiredCount = (() => {
-    if (desiredFromTokens === 0) return Math.min(ARTICLES_PER_USER, Math.max(2, pool.length));
-    return Math.max(2, Math.min(desiredFromTokens, ARTICLES_PER_USER));
-  })();
 
   const buckets = uniqueTokens.map((token) => ({
     token,
     articles: pool.filter((article) => articleMatchesToken(article, token)),
   }));
 
+  const matchedBuckets = buckets.filter((bucket) => bucket.articles.length > 0);
+  if (matchedBuckets.length === 0) {
+    return { articles: [], matched: false, tokens: uniqueTokens };
+  }
+
+  const desiredCount = Math.min(ARTICLES_PER_USER, Math.max(2, matchedBuckets.length));
   const selection: PreparedArticle[] = [];
   const used = new Set<string>();
 
@@ -115,13 +151,13 @@ function selectArticlesForPref(pref: PrefRow, pool: PreparedArticle[]) {
     return false;
   };
 
-  for (const bucket of buckets) {
+  for (const bucket of matchedBuckets) {
     if (selection.length >= desiredCount) break;
     takeFromBucket(bucket);
   }
 
   if (selection.length < desiredCount) {
-    for (const bucket of buckets) {
+    for (const bucket of matchedBuckets) {
       if (selection.length >= desiredCount) break;
       while (selection.length < desiredCount && takeFromBucket(bucket)) {
         // continue drawing from this bucket while it has more matches
@@ -129,18 +165,7 @@ function selectArticlesForPref(pref: PrefRow, pool: PreparedArticle[]) {
     }
   }
 
-  if (selection.length < desiredCount) {
-    for (const article of pool) {
-      if (selection.length >= desiredCount) break;
-      if (used.has(article.id)) continue;
-      selection.push(article);
-      used.add(article.id);
-    }
-  }
-
-  const matched = buckets.some((bucket) => bucket.articles.length > 0);
-
-  return { articles: selection, matched, tokens: uniqueTokens };
+  return { articles: selection, matched: true, tokens: uniqueTokens };
 }
 
 function buildDigestHtml({
@@ -294,7 +319,7 @@ export async function GET(request: Request) {
 
   const { data: rawPrefs, error: prefsError } = await admin
     .from("user_prefs")
-    .select("user_id, interests, timeline, unsubscribed, send_timezone, send_hour, send_minute");
+    .select("user_id, interests, timeline, unsubscribed, send_timezone, send_hour, send_minute, last_digest_sent_at");
   if (prefsError) {
     return NextResponse.json({ ok: false, error: prefsError.message }, { status: 500 });
   }
@@ -311,7 +336,10 @@ export async function GET(request: Request) {
     const targetMinute = typeof pref.send_minute === "number" ? pref.send_minute : 0;
     const current = getTimeInTimezone(timezone, now);
     const minutesElapsed = minutesSinceTarget(targetHour, targetMinute, current.hour, current.minute);
-    return minutesElapsed < windowMinutes;
+    if (minutesElapsed >= windowMinutes) return false;
+    const frequencyHours = parseFrequencyHours(pref.timeline);
+    const elapsedHours = hoursSince(pref.last_digest_sent_at, now);
+    return elapsedHours >= frequencyHours;
   });
 
   if (duePrefs.length === 0) {
@@ -355,6 +383,11 @@ export async function GET(request: Request) {
 
     const { articles: selectedArticles, matched } = selectArticlesForPref(pref, preparedArticles);
     const articleCount = selectedArticles.length;
+
+    if (!matched || articleCount === 0) {
+      results.push({ userId: pref.user_id, email, status: "skipped", error: "No matching articles", matched, articleCount });
+      continue;
+    }
 
     const manageToken = signPayload<TokenPayload>({
       user_id: pref.user_id,
@@ -426,6 +459,13 @@ export async function GET(request: Request) {
       const msg = await res.text().catch(() => res.statusText);
       results.push({ userId: pref.user_id, email, status: "skipped", error: msg, matched, articleCount });
     } else {
+      const { error: updateErr } = await admin
+        .from("user_prefs")
+        .update({ last_digest_sent_at: new Date().toISOString() })
+        .eq("user_id", pref.user_id);
+      if (updateErr && process.env.NODE_ENV !== "production") {
+        console.warn(`Failed to stamp last_digest_sent_at for ${pref.user_id}:`, updateErr.message);
+      }
       results.push({ userId: pref.user_id, email, status: "sent", matched, articleCount });
     }
   }
