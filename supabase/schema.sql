@@ -6,6 +6,7 @@ create table if not exists public.user_prefs (
   interests text,
   timeline text,
   unsubscribed boolean default false not null,
+  last_digest_sent_at timestamptz,
   created_at timestamptz default now() not null,
   updated_at timestamptz default now() not null
 );
@@ -18,6 +19,9 @@ alter table public.user_prefs
 
 alter table public.user_prefs
   add column if not exists send_minute smallint default 0;
+
+alter table public.user_prefs
+  add column if not exists last_digest_sent_at timestamptz;
 
 -- Keep updated_at fresh on writes
 create or replace function public.set_updated_at()
