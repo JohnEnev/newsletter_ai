@@ -115,7 +115,7 @@ function normaliseArticle(row: ArticleRow): PreparedArticle {
 
 function articleMatchesToken(article: PreparedArticle, token: string) {
   if (!token) return false;
-  if (article.normalizedTags.some((tag) => tag === token || tag.includes(token) || token.includes(tag))) {
+  if (article.normalizedTags.some((tag) => tag === token || tag.includes(token))) {
     return true;
   }
   if (article.titleLc.includes(token)) return true;
