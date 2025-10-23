@@ -17,6 +17,8 @@ export function extractInterestTokens(
   function addToken(raw: string | null | undefined) {
     const token = (raw ?? "").trim().toLowerCase();
     if (!token) return;
+    if (token.length < 2) return;
+    if (token.includes(" ")) return;
     if (seen.has(token)) return;
     seen.add(token);
     tokens.push(token);
