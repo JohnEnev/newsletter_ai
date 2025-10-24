@@ -184,6 +184,44 @@ function derivePrimaryTag(tags) {
   return null;
 }
 
+function titleize(slug = "") {
+  return slug
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
+async function ensureTopics({ supabase, articleId, tags }) {
+  if (!supabase || !articleId || !Array.isArray(tags) || tags.length === 0) return;
+  const uniqueSlugs = Array.from(new Set(tags.map((tag) => String(tag ?? "").trim().toLowerCase()).filter(Boolean)));
+  if (uniqueSlugs.length === 0) return;
+
+  const topicRows = uniqueSlugs.map((slug) => ({ slug, display_name: titleize(slug) }));
+  const { data: topics, error: topicErr } = await supabase
+    .from("article_topics")
+    .upsert(topicRows, { onConflict: "slug" })
+    .select("id, slug");
+  if (topicErr) {
+    console.warn("[warn] Failed to upsert topics", topicErr.message);
+    return;
+  }
+
+  if (!Array.isArray(topics) || topics.length === 0) return;
+  const links = topics.map((topic) => ({
+    article_id: articleId,
+    topic_id: topic.id,
+    confidence: 1,
+  }));
+
+  const { error: linkErr } = await supabase
+    .from("article_topic_links")
+    .upsert(links, { onConflict: "article_id,topic_id" });
+  if (linkErr) {
+    console.warn("[warn] Failed to upsert article-topic links", linkErr.message);
+  }
+}
+
 const xmlParser = new XMLParser({
   ignoreAttributes: false,
   attributeNamePrefix: "",
@@ -444,7 +482,7 @@ export async function ingestArticles({ supabase, articles, dryRun = false }) {
             .map((tag) => String(tag ?? "").trim().toLowerCase())
             .filter((tag) => tag.length > 0)
         : [];
-      const { error } = await supabase
+      const { data: insertedRow, error } = await supabase
         .from("articles")
         .insert({
           title: article.title,
@@ -453,12 +491,15 @@ export async function ingestArticles({ supabase, articles, dryRun = false }) {
           tags,
           primary_tag: derivePrimaryTag(tags),
           source: article.source,
-        });
+        })
+        .select("id")
+        .single();
       if (error) {
         console.error(`[error] Failed to insert ${article.url}: ${error.message}`);
       } else {
         console.log(`[inserted] ${article.title}`);
         inserted++;
+        await ensureTopics({ supabase, articleId: insertedRow?.id, tags });
       }
     } catch (err) {
       console.error(`[error] Unexpected issue for ${article?.url}:`, err instanceof Error ? err.message : err);

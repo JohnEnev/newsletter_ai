@@ -134,6 +134,27 @@ export default function AuthCallbackPage() {
             .select()
             .single();
           if (upsertError) throw upsertError;
+
+          try {
+            const {
+              data: { session },
+            } = await supabase.auth.getSession();
+            const token = session?.access_token;
+            if (token) {
+              await fetch("/api/topics/sync", {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  Authorization: `Bearer ${token}`,
+                },
+                body: JSON.stringify({ interests: interestText, timeline: timelineText }),
+              });
+            }
+          } catch (err) {
+            if (process.env.NODE_ENV !== "production") {
+              console.warn("Failed to sync topics", err);
+            }
+          }
         }
 
         localStorage.removeItem("pendingSignupPrefs");

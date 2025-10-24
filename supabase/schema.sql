@@ -163,3 +163,68 @@ create policy "Users can insert own surveys"
   on public.surveys
   for insert
   with check (auth.uid() = user_id);
+
+-- ============================================
+-- Topics & feeds
+-- ============================================
+
+create table if not exists public.article_topics (
+  id uuid primary key default gen_random_uuid(),
+  slug text not null unique,
+  display_name text,
+  description text,
+  metadata jsonb,
+  created_at timestamptz default now() not null,
+  updated_at timestamptz default now() not null
+);
+
+create table if not exists public.article_topic_feeds (
+  id uuid primary key default gen_random_uuid(),
+  topic_id uuid not null references public.article_topics(id) on delete cascade,
+  feed_url text not null unique,
+  status text not null default 'active',
+  last_synced_at timestamptz,
+  metadata jsonb,
+  created_at timestamptz default now() not null,
+  updated_at timestamptz default now() not null
+);
+
+create table if not exists public.user_interest_topics (
+  user_id uuid not null references auth.users(id) on delete cascade,
+  topic_id uuid not null references public.article_topics(id) on delete cascade,
+  weight numeric,
+  source text,
+  inferred boolean default false,
+  metadata jsonb,
+  created_at timestamptz default now() not null,
+  updated_at timestamptz default now() not null,
+  primary key (user_id, topic_id)
+);
+
+create table if not exists public.article_topic_links (
+  article_id uuid not null references public.articles(id) on delete cascade,
+  topic_id uuid not null references public.article_topics(id) on delete cascade,
+  confidence numeric,
+  created_at timestamptz default now() not null,
+  primary key (article_id, topic_id)
+);
+
+drop trigger if exists set_article_topics_updated_at on public.article_topics;
+create trigger set_article_topics_updated_at
+before update on public.article_topics
+for each row execute function public.set_updated_at();
+
+drop trigger if exists set_article_topic_feeds_updated_at on public.article_topic_feeds;
+create trigger set_article_topic_feeds_updated_at
+before update on public.article_topic_feeds
+for each row execute function public.set_updated_at();
+
+drop trigger if exists set_user_interest_topics_updated_at on public.user_interest_topics;
+create trigger set_user_interest_topics_updated_at
+before update on public.user_interest_topics
+for each row execute function public.set_updated_at();
+
+alter table public.article_topics enable row level security;
+alter table public.article_topic_feeds enable row level security;
+alter table public.user_interest_topics enable row level security;
+alter table public.article_topic_links enable row level security;

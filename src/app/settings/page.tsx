@@ -81,6 +81,28 @@ export default function SettingsPage() {
   const [saveMsg, setSaveMsg] = useState<string | null>(null);
   const [unsubscribed, setUnsubscribed] = useState(false);
 
+  async function syncTopicsToServer(interestText: string, timelineText: string) {
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      const token = session?.access_token;
+      if (!token) return;
+      await fetch("/api/topics/sync", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ interests: interestText, timeline: timelineText }),
+      });
+    } catch (err) {
+      if (process.env.NODE_ENV !== "production") {
+        console.warn("Failed to sync topics", err);
+      }
+    }
+  }
+
   useEffect(() => {
     const run = async () => {
       try {
@@ -145,6 +167,7 @@ export default function SettingsPage() {
         .select()
         .single();
       if (error) throw error;
+      await syncTopicsToServer(interestText, timelineText);
       setSaveMsg("Preferences saved");
     } catch (error) {
       setSaveMsg(getErrorMessage(error, "Failed to save preferences"));
@@ -188,6 +211,7 @@ export default function SettingsPage() {
         .single();
       if (error) throw error;
       setUnsubscribed(next);
+      await syncTopicsToServer(interestText, timelineText);
       setSaveMsg(next ? "Unsubscribed" : "Resubscribed");
     } catch (error) {
       setSaveMsg(getErrorMessage(error, "Failed to update subscription"));

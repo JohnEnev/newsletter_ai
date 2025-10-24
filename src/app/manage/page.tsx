@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@supabase/supabase-js";
 import { verifyTokenWithSecrets, getPayloadNonce, consumeNonce, type TokenPayload } from "@/lib/tokens";
+import { syncUserTopics } from "@/lib/server/topics";
 
 type PageProps = {
   searchParams?: Record<string, string | string[] | undefined>;
@@ -165,7 +166,7 @@ export default async function ManagePage({ searchParams }: PageProps) {
     const interestText = interests.trim();
     const timelineText = timeline.trim();
 
-    await adminClient
+    const { error: upsertError } = await adminClient
       .from("user_prefs")
       .upsert({
         user_id: userId,
@@ -178,6 +179,17 @@ export default async function ManagePage({ searchParams }: PageProps) {
       })
       .select()
       .single();
+
+    if (upsertError) {
+      redirect(failureUrl);
+    }
+
+    await syncUserTopics({
+      supabase: adminClient,
+      userId,
+      interests: interestText,
+      timeline: timelineText,
+    });
 
     redirect(`/manage?token=${encodeURIComponent(tokenValue)}&ok=1${forceResub ? "&resub=1" : ""}`);
   }
