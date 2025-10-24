@@ -31,26 +31,30 @@ function safeParseTopics(raw: string | null | undefined): TopicSuggestion[] {
   if (!raw) return [];
   try {
     const parsed = JSON.parse(raw);
+    const results: TopicSuggestion[] = [];
+
+    const pushItem = (entry: unknown) => {
+      if (!entry || typeof entry !== "object") return;
+      const record = entry as Record<string, unknown>;
+      const display = typeof record.display_name === "string" ? record.display_name.trim() : "";
+      const base = display || (typeof record.slug === "string" ? record.slug : "");
+      const slug = slugify(base);
+      if (!slug) return;
+      results.push({
+        slug,
+        display_name: display || titleize(slug),
+        weight: typeof record.weight === "number" ? record.weight : undefined,
+      });
+    };
+
     if (Array.isArray(parsed)) {
-      return parsed
-        .map((item) => {
-          if (!item) return null;
-          if (typeof item.slug !== "string" && typeof item.display_name !== "string") return null;
-          const display = typeof item.display_name === "string" ? item.display_name.trim() : "";
-          const base = display || String(item.slug ?? "");
-          const slug = slugify(base);
-          if (!slug) return null;
-          return {
-            slug,
-            display_name: display || titleize(slug),
-            weight: typeof item.weight === "number" ? item.weight : undefined,
-          } satisfies TopicSuggestion;
-        })
-        .filter((item): item is TopicSuggestion => Boolean(item));
+      parsed.forEach(pushItem);
+      return results;
     }
 
     if (parsed && typeof parsed === "object" && Array.isArray(parsed.topics)) {
-      return safeParseTopics(JSON.stringify(parsed.topics));
+      parsed.topics.forEach(pushItem);
+      return results;
     }
   } catch {}
   return [];
