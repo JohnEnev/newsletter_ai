@@ -25,6 +25,12 @@ type ArticleRow = {
   primary_tag: string | null;
 };
 
+type TopicRow = {
+  id: string;
+  slug: string | null;
+  display_name: string | null;
+};
+
 const RESEND_ENDPOINT = "https://api.resend.com/emails";
 
 function getTimeInTimezone(timeZone: string, reference: Date) {
@@ -91,6 +97,7 @@ const ARTICLE_POOL_LIMIT = 40;
 
 type PreparedArticle = ArticleRow & {
   normalizedTags: string[];
+  topicSlugs: string[];
   titleLc: string;
   summaryLc: string;
 };
@@ -108,6 +115,7 @@ function normaliseArticle(row: ArticleRow): PreparedArticle {
   return {
     ...row,
     normalizedTags,
+    topicSlugs: [],
     titleLc: row.title?.toLowerCase?.() ?? "",
     summaryLc: row.summary?.toLowerCase?.() ?? "",
   };
@@ -118,19 +126,25 @@ function articleMatchesToken(article: PreparedArticle, token: string) {
   if (article.normalizedTags.some((tag) => tag === token || tag.includes(token))) {
     return true;
   }
+  if (article.topicSlugs?.includes(token)) return true;
   if (article.titleLc.includes(token)) return true;
   if (article.summaryLc.includes(token)) return true;
   return false;
 }
 
-function selectArticlesForPref(pref: PrefRow, pool: PreparedArticle[]) {
+function selectArticlesForPref(pref: PrefRow, pool: PreparedArticle[], topicLookup: Map<string, { id: string; slug: string; display_name: string | null }>) {
   const tokens = extractInterestTokens(pref.interests, { maxTokens: 12 });
   const uniqueTokens = Array.from(new Set(tokens));
 
-  const buckets = uniqueTokens.map((token) => ({
-    token,
-    articles: pool.filter((article) => articleMatchesToken(article, token)),
-  }));
+  const buckets = uniqueTokens.map((token) => {
+    const canonical = topicLookup.get(token)?.slug ?? token;
+    const articles = pool.filter((article) => {
+      if (articleMatchesToken(article, canonical)) return true;
+      if (canonical !== token) return articleMatchesToken(article, token);
+      return false;
+    });
+    return { token, canonical, articles };
+  });
 
   const matchedBuckets = buckets.filter((bucket) => bucket.articles.length > 0);
   if (matchedBuckets.length === 0) {
@@ -168,6 +182,48 @@ function selectArticlesForPref(pref: PrefRow, pool: PreparedArticle[]) {
   return { articles: selection, matched: true, tokens: uniqueTokens };
 }
 
+function toDisplayLabel(token: string) {
+  return token
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
+function formatInterestSummary(tokens: string[], topicLookup: Map<string, { id: string; slug: string; display_name: string | null }>, raw: string | null | undefined) {
+  const labels = Array.from(
+    new Set(
+      tokens
+        .map((token) => {
+          const entry = topicLookup.get(token);
+          if (entry?.display_name) return entry.display_name;
+          return toDisplayLabel(token);
+        })
+        .filter((label): label is string => Boolean(label))
+    )
+  );
+  if (labels.length > 0) return labels.join(" · ");
+  return (raw || "").trim();
+}
+
+function formatTimelineSummary(timeline: string | null | undefined) {
+  if (!timeline) return "";
+  const value = timeline.trim();
+  if (!value) return "";
+  const lower = value.toLowerCase();
+  if (lower.includes("daily")) return "Daily";
+  if (lower.includes("bi") && lower.includes("week")) return "Twice Weekly";
+  if (lower.includes("weekly")) return "Weekly";
+  if (lower.includes("fortnight")) return "Every Two Weeks";
+  if (lower.includes("monthly")) return "Monthly";
+  if (lower.includes("weekday")) return "Weekdays";
+  if (lower.includes("weekend")) return "Weekend";
+  if (lower.includes("morning")) return "Morning";
+  if (lower.includes("evening")) return "Evening";
+  if (lower.includes("hour")) return "Hourly";
+  return value;
+}
+
 function buildDigestHtml({
   prefs,
   articles,
@@ -175,6 +231,8 @@ function buildDigestHtml({
   unsubscribeUrl,
   resubscribeUrl,
   yesNoLinks,
+  interestSummary,
+  timelineSummary,
 }: {
   prefs: { interests?: string | null; timeline?: string | null; unsubscribed?: boolean | null };
   articles: { id: string; title: string; url: string; summary?: string | null }[];
@@ -182,6 +240,8 @@ function buildDigestHtml({
   unsubscribeUrl: string;
   resubscribeUrl: string;
   yesNoLinks: Record<string, { yes: string; no: string }>;
+  interestSummary?: string | null;
+  timelineSummary?: string | null;
 }) {
   const esc = (value: string | null | undefined) =>
     String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -205,12 +265,19 @@ function buildDigestHtml({
     })
     .join("\n");
 
-  const articleRows = itemsHtml
-    || `<tr>
+  const articleRows =
+    itemsHtml ||
+    `<tr>
           <td style="padding:12px 0; color:#555; font-size:14px;">
             We didn’t find fresh articles that match your interests today, but we’ll keep looking.
           </td>
         </tr>`;
+
+  const interestLine = interestSummary ? `Interests: ${esc(interestSummary)}` : (prefs?.interests ? `Interests: ${esc(prefs.interests)}` : "");
+  const timelineLine = timelineSummary ? `Cadence: ${esc(timelineSummary)}` : (prefs?.timeline ? `Timeline: ${esc(prefs.timeline)}` : "");
+  const infoLines = [interestLine, timelineLine].filter(Boolean).join("<br/>");
+  const unsubLine = prefs?.unsubscribed ? `<strong style="color:#b91c1c;">(Currently unsubscribed)</strong>` : "";
+  const detailLines = [infoLines, unsubLine].filter(Boolean).join(infoLines && unsubLine ? "<br/>" : "");
 
   return `<!doctype html>
 <html>
@@ -225,9 +292,7 @@ function buildDigestHtml({
         <td>
           <h1 style="margin:0;font-size:22px;">Your Newsletter</h1>
           <div style="color:#555;font-size:14px;margin-top:6px;">
-            ${prefs?.interests ? `Interests: ${esc(prefs.interests)}` : ""}
-            ${prefs?.timeline ? `<br/>Timeline: ${esc(prefs.timeline)}` : ""}
-            ${prefs?.unsubscribed ? `<br/><strong style=\"color:#b91c1c;\">(Currently unsubscribed)</strong>` : ""}
+            ${detailLines || ""}
           </div>
         </td>
       </tr>
@@ -357,6 +422,38 @@ export async function GET(request: Request) {
   const articles = (rawArticles ?? []) as ArticleRow[];
   const preparedArticles = articles.map(normaliseArticle);
 
+  const articleIds = preparedArticles.map((article) => article.id);
+  const { data: topicData } = await admin
+    .from("article_topics")
+    .select("id, slug, display_name");
+  const topicRows = (topicData ?? []) as TopicRow[];
+  const topicById = new Map<string, { slug: string; display_name: string | null }>();
+  const topicLookup = new Map<string, { id: string; slug: string; display_name: string | null }>();
+  for (const topic of topicRows) {
+    const slug = (topic.slug ?? "").toLowerCase();
+    if (!slug) continue;
+    const display = topic.display_name ?? null;
+    topicById.set(topic.id, { slug, display_name: display });
+    topicLookup.set(slug, { id: topic.id, slug, display_name: display });
+  }
+  if (articleIds.length > 0) {
+    const { data: linkRows } = await admin
+      .from("article_topic_links")
+      .select("article_id, topic_id")
+      .in("article_id", articleIds);
+    if (Array.isArray(linkRows)) {
+      const articleMap = new Map(preparedArticles.map((article) => [article.id, article]));
+      for (const link of linkRows) {
+        const topic = link?.topic_id ? topicById.get(link.topic_id) : undefined;
+        const article = link?.article_id ? articleMap.get(link.article_id) : undefined;
+        if (!topic || !article) continue;
+        if (!article.topicSlugs.includes(topic.slug)) {
+          article.topicSlugs.push(topic.slug);
+        }
+      }
+    }
+  }
+
   const { data: userList } = await admin.auth.admin.listUsers({ page: 1, perPage: 2000 });
   const emailLookup = new Map<string, string>();
   for (const user of userList?.users || []) {
@@ -372,6 +469,7 @@ export async function GET(request: Request) {
     error?: string;
     matched?: boolean;
     articleCount?: number;
+    tokens?: string[];
   }> = [];
 
   for (const pref of duePrefs) {
@@ -381,11 +479,13 @@ export async function GET(request: Request) {
       continue;
     }
 
-    const { articles: selectedArticles, matched } = selectArticlesForPref(pref, preparedArticles);
+    const { articles: selectedArticles, matched, tokens } = selectArticlesForPref(pref, preparedArticles, topicLookup);
+    const interestSummary = formatInterestSummary(tokens, topicLookup, pref.interests);
+    const timelineSummary = formatTimelineSummary(pref.timeline);
     const articleCount = selectedArticles.length;
 
     if (!matched || articleCount === 0) {
-      results.push({ userId: pref.user_id, email, status: "skipped", error: "No matching articles", matched, articleCount });
+      results.push({ userId: pref.user_id, email, status: "skipped", error: "No matching articles", matched, articleCount, tokens });
       continue;
     }
 
@@ -433,7 +533,7 @@ export async function GET(request: Request) {
     }
 
     if (dryRun) {
-      results.push({ userId: pref.user_id, email, status: "dry", matched, articleCount });
+      results.push({ userId: pref.user_id, email, status: "dry", matched, articleCount, tokens });
       continue;
     }
 
@@ -444,6 +544,8 @@ export async function GET(request: Request) {
       unsubscribeUrl,
       resubscribeUrl,
       yesNoLinks,
+      interestSummary,
+      timelineSummary,
     });
 
     const res = await fetch(RESEND_ENDPOINT, {
@@ -457,7 +559,7 @@ export async function GET(request: Request) {
 
     if (!res.ok) {
       const msg = await res.text().catch(() => res.statusText);
-      results.push({ userId: pref.user_id, email, status: "skipped", error: msg, matched, articleCount });
+      results.push({ userId: pref.user_id, email, status: "skipped", error: msg, matched, articleCount, tokens });
     } else {
       const { error: updateErr } = await admin
         .from("user_prefs")
@@ -466,7 +568,7 @@ export async function GET(request: Request) {
       if (updateErr && process.env.NODE_ENV !== "production") {
         console.warn(`Failed to stamp last_digest_sent_at for ${pref.user_id}:`, updateErr.message);
       }
-      results.push({ userId: pref.user_id, email, status: "sent", matched, articleCount });
+      results.push({ userId: pref.user_id, email, status: "sent", matched, articleCount, tokens });
     }
   }
 
