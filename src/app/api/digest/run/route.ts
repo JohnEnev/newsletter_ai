@@ -33,6 +33,68 @@ type TopicRow = {
 
 const RESEND_ENDPOINT = "https://api.resend.com/emails";
 
+const TOKEN_SYNONYMS: Record<string, string[]> = {
+  ai: [
+    "ai",
+    "artificial intelligence",
+    "machine learning",
+    "ml",
+    "generative ai",
+    "large language model",
+    "automation",
+  ],
+  geopolitics: [
+    "geopolitics",
+    "geo-politics",
+    "geopolitical",
+    "geopolitical risk",
+    "world politics",
+    "international relations",
+    "foreign policy",
+    "global security",
+    "geostrategy",
+  ],
+  politics: [
+    "politics",
+    "policy",
+    "government",
+    "public policy",
+    "election",
+    "political",
+  ],
+  history: [
+    "history",
+    "historical",
+    "world history",
+    "heritage",
+    "culture history",
+    "timeline",
+    "past events",
+  ],
+  economics: [
+    "economics",
+    "economy",
+    "macroeconomics",
+    "markets",
+    "economic policy",
+    "inflation",
+  ],
+  finance: [
+    "finance",
+    "markets",
+    "investing",
+    "stocks",
+    "capital",
+  ],
+  climate: [
+    "climate",
+    "environment",
+    "sustainability",
+    "energy",
+    "carbon",
+  ],
+};
+
 function getTimeInTimezone(timeZone: string, reference: Date) {
   try {
     const formatter = new Intl.DateTimeFormat("en-US", {
@@ -132,17 +194,44 @@ function articleMatchesToken(article: PreparedArticle, token: string) {
   return false;
 }
 
+function expandTokenVariants(
+  token: string,
+  topicLookup: Map<string, { id: string; slug: string; display_name: string | null }>,
+): string[] {
+  const base = token.trim().toLowerCase();
+  if (!base) return [];
+
+  const variants = new Set<string>();
+  variants.add(base);
+
+  const canonical = topicLookup.get(base)?.slug;
+  if (canonical) variants.add(canonical.toLowerCase());
+
+  const synonymList = TOKEN_SYNONYMS[base] || TOKEN_SYNONYMS[canonical ?? ""];
+  if (Array.isArray(synonymList)) {
+    synonymList.forEach((entry) => {
+      const value = entry.trim().toLowerCase();
+      if (value) variants.add(value);
+    });
+  }
+
+  if (base.includes("-")) variants.add(base.replace(/-/g, " "));
+  if (base.includes("_")) variants.add(base.replace(/_/g, " "));
+  if (base.endsWith("s") && base.length > 3) variants.add(base.slice(0, -1));
+
+  return Array.from(variants.values());
+}
+
 function selectArticlesForPref(pref: PrefRow, pool: PreparedArticle[], topicLookup: Map<string, { id: string; slug: string; display_name: string | null }>) {
   const tokens = extractInterestTokens(pref.interests, { maxTokens: 12 });
   const uniqueTokens = Array.from(new Set(tokens));
 
   const buckets = uniqueTokens.map((token) => {
     const canonical = topicLookup.get(token)?.slug ?? token;
-    const articles = pool.filter((article) => {
-      if (articleMatchesToken(article, canonical)) return true;
-      if (canonical !== token) return articleMatchesToken(article, token);
-      return false;
-    });
+    const variants = expandTokenVariants(token, topicLookup);
+    const articles = pool.filter((article) =>
+      variants.some((variant) => articleMatchesToken(article, variant)),
+    );
     return { token, canonical, articles };
   });
 
@@ -186,7 +275,10 @@ function toDisplayLabel(token: string) {
   return token
     .split(/[-_\s]+/)
     .filter(Boolean)
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .map((word) => {
+      if (/^[a-z]{1,3}$/.test(word)) return word.toUpperCase();
+      return word.charAt(0).toUpperCase() + word.slice(1);
+    })
     .join(" ");
 }
 
@@ -247,19 +339,29 @@ function buildDigestHtml({
     String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
   const itemsHtml = (articles || [])
-    .map((article) => {
+    .map((article, index) => {
       const links = yesNoLinks[article.id];
+      const number = String(index + 1).padStart(2, "0");
       return `
         <tr>
-          <td style="padding:12px 0;">
-            <div style="font-size:16px;font-weight:600;line-height:1.3;">
-              <a href="${article.url}" style="color:#111;text-decoration:none;">${esc(article.title)}</a>
-            </div>
-            ${article.summary ? `<div style=\"color:#555;font-size:14px;margin-top:4px;\">${esc(article.summary)}</div>` : ""}
-            <div style="margin-top:8px;">
-              <a href="${links.yes}" style="font-size:12px;color:#2563eb;text-decoration:none;margin-right:8px;">👍 Helpful</a>
-              <a href="${links.no}" style="font-size:12px;color:#2563eb;text-decoration:none;">👎 Not really</a>
-            </div>
+          <td style="padding:0 32px;">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-bottom:1px solid #e2e8f0;">
+              <tr>
+                <td style="padding:28px 0;">
+                  <div style="font-size:12px;letter-spacing:0.2em;text-transform:uppercase;color:#94a3b8;font-weight:600;">${number}</div>
+                  <div style="margin-top:8px;font-size:20px;font-weight:600;line-height:1.4;">
+                    <a href="${article.url}" style="color:#0f172a;text-decoration:none;">${esc(article.title)}</a>
+                  </div>
+                  ${article.summary ? `<div style=\"margin-top:12px;font-size:15px;line-height:1.6;color:#475569;\">${esc(article.summary)}</div>` : ""}
+                  <div style="margin-top:18px;">
+                    <a href="${article.url}" style="display:inline-block;padding:10px 18px;background:#0ea5e9;color:#ffffff;font-size:14px;font-weight:600;text-decoration:none;border-radius:999px;">Read article →</a>
+                    <span style="display:inline-block;height:0;width:12px;"></span>
+                    <a href="${links.yes}" style="font-size:13px;color:#2563eb;text-decoration:none;margin-right:12px;">👍 Helpful</a>
+                    <a href="${links.no}" style="font-size:13px;color:#2563eb;text-decoration:none;">👎 Not really</a>
+                  </div>
+                </td>
+              </tr>
+            </table>
           </td>
         </tr>`;
     })
@@ -268,39 +370,65 @@ function buildDigestHtml({
   const articleRows =
     itemsHtml ||
     `<tr>
-          <td style="padding:12px 0; color:#555; font-size:14px;">
+          <td style="padding:40px 32px;color:#475569;font-size:15px;line-height:1.6;">
             We didn’t find fresh articles that match your interests today, but we’ll keep looking.
           </td>
         </tr>`;
 
-  const interestLine = interestSummary ? `Interests: ${esc(interestSummary)}` : (prefs?.interests ? `Interests: ${esc(prefs.interests)}` : "");
-  const timelineLine = timelineSummary ? `Cadence: ${esc(timelineSummary)}` : (prefs?.timeline ? `Timeline: ${esc(prefs.timeline)}` : "");
-  const infoLines = [interestLine, timelineLine].filter(Boolean).join("<br/>");
-  const unsubLine = prefs?.unsubscribed ? `<strong style="color:#b91c1c;">(Currently unsubscribed)</strong>` : "";
-  const detailLines = [infoLines, unsubLine].filter(Boolean).join(infoLines && unsubLine ? "<br/>" : "");
+  const interestValue = interestSummary || prefs?.interests;
+  const cadenceValue = timelineSummary || prefs?.timeline;
+  const detailBlocks = [
+    interestValue ? `<strong style="color:#e0f2fe;">Interests</strong><br/><span style="color:#f8fafc;opacity:0.9;">${esc(interestValue)}</span>` : "",
+    cadenceValue ? `<strong style="color:#e0f2fe;">Cadence</strong><br/><span style="color:#f8fafc;opacity:0.85;">${esc(cadenceValue)}</span>` : "",
+  ].filter(Boolean);
+  const detailLines =
+    detailBlocks.length > 0
+      ? `<table role="presentation" cellpadding="0" cellspacing="0" style="margin-top:18px;">
+          <tr>
+            ${detailBlocks
+              .map(
+                (block) =>
+                  `<td style="padding-right:24px;font-size:14px;line-height:1.5;min-width:160px;">${block}</td>`,
+              )
+              .join("")}
+          </tr>
+        </table>`
+      : "";
+
+  const unsubLine = prefs?.unsubscribed
+    ? `<div style="margin-top:18px;font-size:13px;color:#fef3c7;background:rgba(15,23,42,0.2);padding:10px 14px;border-radius:10px;display:inline-block;">Currently unsubscribed — resubscribe below to start receiving issues again.</div>`
+    : "";
 
   return `<!doctype html>
 <html>
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Newsletter</title>
+    <title>Your Newsletter</title>
   </head>
-  <body style="font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; background:#f8fafc; padding:24px;">
-    <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="max-width:680px;margin:0 auto;background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:24px;">
+  <body style="margin:0;padding:0;background:#f1f5f9;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f172a;">
+    <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="padding:32px 16px;">
       <tr>
-        <td>
-          <h1 style="margin:0;font-size:22px;">Your Newsletter</h1>
-          <div style="color:#555;font-size:14px;margin-top:6px;">
-            ${detailLines || ""}
-          </div>
-        </td>
-      </tr>
-      ${articleRows}
-      <tr>
-        <td style="padding-top:16px;border-top:1px solid #e5e7eb;">
-          <div style="font-size:12px;color:#6b7280;">Manage Preferences: <a href="${manageUrl}" style="color:#2563eb;">link</a></div>
-          <div style="font-size:12px;color:#6b7280;">Unsubscribe: <a href="${unsubscribeUrl}" style="color:#2563eb;">link</a> | Resubscribe: <a href="${resubscribeUrl}" style="color:#2563eb;">link</a></div>
+        <td align="center">
+          <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="max-width:640px;background:#ffffff;border-radius:18px;border:1px solid #e2e8f0;overflow:hidden;box-shadow:0 20px 45px -30px rgba(15,23,42,0.45);">
+            <tr>
+              <td style="background:linear-gradient(135deg,#0ea5e9,#6366f1);padding:36px 32px 32px;color:#f8fafc;">
+                <div style="font-size:12px;text-transform:uppercase;letter-spacing:0.28em;font-weight:600;opacity:0.8;">Newsletter AI</div>
+                <h1 style="margin:12px 0 0;font-size:30px;line-height:1.25;font-weight:700;color:#f8fafc;">Your Newsletter</h1>
+                ${detailLines}
+                ${unsubLine}
+              </td>
+            </tr>
+            ${articleRows}
+            <tr>
+              <td style="padding:28px 32px 36px;background:#f8fafc;border-top:1px solid #e2e8f0;text-align:center;">
+                <a href="${manageUrl}" style="display:inline-block;margin:4px 6px;padding:12px 20px;border-radius:999px;background:#1f2937;color:#f9fafb;font-size:14px;font-weight:600;text-decoration:none;">Manage preferences</a>
+                <a href="${unsubscribeUrl}" style="display:inline-block;margin:4px 6px;padding:12px 20px;border-radius:999px;background:#e2e8f0;color:#0f172a;font-size:14px;font-weight:600;text-decoration:none;">Unsubscribe</a>
+                <a href="${resubscribeUrl}" style="display:inline-block;margin:4px 6px;padding:12px 20px;border-radius:999px;background:#0ea5e9;color:#f8fafc;font-size:14px;font-weight:600;text-decoration:none;">Resubscribe</a>
+              </td>
+            </tr>
+          </table>
+          <div style="margin-top:18px;font-size:12px;color:#94a3b8;">You received this email because you signed up for Newsletter AI.</div>
         </td>
       </tr>
     </table>
