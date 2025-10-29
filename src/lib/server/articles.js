@@ -83,14 +83,38 @@ const FALLBACK_ARTICLES = [
  * @property {string} source
  */
 
+const NAMED_HTML_ENTITIES = {
+  amp: "&",
+  lt: "<",
+  gt: ">",
+  quot: '"',
+  apos: "'",
+  nbsp: " ",
+  rsquo: "’",
+  lsquo: "‘",
+  ldquo: "“",
+  rdquo: "”",
+  hellip: "…",
+  mdash: "—",
+  ndash: "–",
+};
+
 function decodeHtml(value = "") {
-  return value
-    .replace(/<!\[CDATA\[(.*?)\]\]>/gs, "$1")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&amp;/g, "&")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'");
+  const decodedCdata = value.replace(/<!\[CDATA\[(.*?)\]\]>/gs, "$1");
+  return decodedCdata.replace(/&(#\d+|#x[0-9a-f]+|[a-z]+);/gi, (match, entity) => {
+    const lower = entity.toLowerCase();
+    if (lower.startsWith("#x")) {
+      const codePoint = Number.parseInt(lower.slice(2), 16);
+      if (!Number.isNaN(codePoint)) return String.fromCodePoint(codePoint);
+      return match;
+    }
+    if (lower.startsWith("#")) {
+      const codePoint = Number.parseInt(lower.slice(1), 10);
+      if (!Number.isNaN(codePoint)) return String.fromCodePoint(codePoint);
+      return match;
+    }
+    return NAMED_HTML_ENTITIES[lower] ?? match;
+  });
 }
 
 function stripHtml(value = "") {
