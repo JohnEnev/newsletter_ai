@@ -29,6 +29,24 @@ type RecentArticle = {
   tags: string[] | null;
 };
 
+function toTopicShape(value: unknown): { slug: string | null; display_name: string | null } | null {
+  if (!value) return null;
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const normalised = toTopicShape(entry);
+      if (normalised) return normalised;
+    }
+    return null;
+  }
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const slug = typeof record.slug === "string" ? record.slug : null;
+    const display = typeof record.display_name === "string" ? record.display_name : null;
+    if (slug || display) return { slug, display_name: display };
+  }
+  return null;
+}
+
 function validateSecret(searchParams?: Record<string, string | string[] | undefined>) {
   const secret = process.env.ADMIN_DASHBOARD_SECRET || process.env.DIGEST_PREVIEW_SECRET || "";
   const provided = typeof searchParams?.secret === "string" ? searchParams.secret : "";
@@ -131,9 +149,31 @@ export default async function AdminFeedsPage({ searchParams }: PageProps) {
   if (articleRes.error) issues.push(`Recent articles failed: ${articleRes.error.message}`);
 
   const totalArticles = articleCountRes.count ?? 0;
-  const feeds = (feedRes.data ?? []) as FeedRow[];
-  const topicCounts = (topicCountRes.data ?? []) as TopicCountRow[];
-  const recentArticles = (articleRes.data ?? []) as RecentArticle[];
+  const rawFeeds = Array.isArray(feedRes.data) ? feedRes.data : [];
+  const feeds: FeedRow[] = rawFeeds.map((row) => ({
+    id: String(row.id ?? ""),
+    feed_url: String(row.feed_url ?? ""),
+    status: typeof row.status === "string" ? row.status : null,
+    last_synced_at: typeof row.last_synced_at === "string" ? row.last_synced_at : null,
+    topic: toTopicShape(row.topic),
+  }));
+
+  const rawTopicCounts = Array.isArray(topicCountRes.data) ? topicCountRes.data : [];
+  const topicCounts: TopicCountRow[] = rawTopicCounts.map((row) => ({
+    topic_id: typeof row.topic_id === "string" ? row.topic_id : null,
+    count: typeof row.count === "number" ? row.count : Number(row.count ?? 0) || 0,
+    topic: toTopicShape(row.topic),
+  }));
+
+  const rawArticles = Array.isArray(articleRes.data) ? articleRes.data : [];
+  const recentArticles: RecentArticle[] = rawArticles.map((row) => ({
+    id: String(row.id ?? ""),
+    title: String(row.title ?? "Untitled"),
+    created_at: typeof row.created_at === "string" ? row.created_at : null,
+    source: typeof row.source === "string" ? row.source : null,
+    primary_tag: typeof row.primary_tag === "string" ? row.primary_tag : null,
+    tags: Array.isArray(row.tags) ? row.tags.map((tag) => String(tag)) : null,
+  }));
 
   const activeFeeds = feeds.filter((feed) => (feed.status || "active").toLowerCase() === "active");
 
