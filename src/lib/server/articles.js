@@ -1,14 +1,18 @@
 import fs from "fs";
 import path from "path";
 import { XMLParser } from "fast-xml-parser";
+import { createClient } from "@supabase/supabase-js";
 
 const DEFAULT_FEEDS = [
   "https://hnrss.org/frontpage",
-  "https://rss.nytimes.com/services/xml/rss/nyt/Technology.xml", 
+  "https://rss.nytimes.com/services/xml/rss/nyt/Technology.xml",
   "https://www.producthunt.com/feed",
   "https://www.theverge.com/rss/index.xml",
   "https://www.technologyreview.com/feed/",
   "https://feeds.feedburner.com/TechCrunch/startups",
+  "https://feeds.bbci.co.uk/news/world/rss.xml",
+  "https://foreignpolicy.com/feed/",
+  "https://www.historytoday.com/feed/rss.xml",
 ];
 
 const STOP_WORDS = new Set([
@@ -66,6 +70,89 @@ const FALLBACK_ARTICLES = [
     source: "example.com",
   },
 ];
+
+function createSupabaseAdmin() {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!supabaseUrl || !serviceRoleKey) return null;
+  try {
+    return createClient(supabaseUrl, serviceRoleKey, {
+      auth: { autoRefreshToken: false, persistSession: false },
+    });
+  } catch (error) {
+    console.warn(
+      "[warn] Failed to create Supabase client for topic feeds",
+      error instanceof Error ? error.message : error,
+    );
+    return null;
+  }
+}
+
+async function loadTopicFeedMap() {
+  const client = createSupabaseAdmin();
+  if (!client) return new Map();
+
+  try {
+    const { data: feedRows, error: feedError } = await client
+      .from("article_topic_feeds")
+      .select("feed_url, topic_id, status")
+      .eq("status", "active");
+    if (feedError || !Array.isArray(feedRows)) {
+      if (feedError && process.env.NODE_ENV !== "production") {
+        console.warn("[warn] Failed to load article_topic_feeds", feedError.message);
+      }
+      return new Map();
+    }
+
+    const topicIds = Array.from(
+      new Set(
+        feedRows
+          .map((row) => row?.topic_id)
+          .filter((value) => typeof value === "string" && value.length > 0),
+      ),
+    );
+
+    const topicMap = new Map();
+    if (topicIds.length > 0) {
+      const { data: topicRows, error: topicError } = await client
+        .from("article_topics")
+        .select("id, slug")
+        .in("id", topicIds);
+      if (topicError) {
+        if (process.env.NODE_ENV !== "production") {
+          console.warn("[warn] Failed to load article_topics", topicError.message);
+        }
+      } else if (Array.isArray(topicRows)) {
+        for (const topic of topicRows) {
+          const id = topic?.id;
+          const slug = typeof topic?.slug === "string" ? topic.slug.trim().toLowerCase() : "";
+          if (id && slug) topicMap.set(id, slug);
+        }
+      }
+    }
+
+    const feedMap = new Map();
+    for (const row of feedRows) {
+      const url = typeof row?.feed_url === "string" ? row.feed_url.trim() : "";
+      if (!url) continue;
+      if (!feedMap.has(url)) feedMap.set(url, new Set());
+      const topicSlug = row?.topic_id ? topicMap.get(row.topic_id) : undefined;
+      if (topicSlug) {
+        feedMap.get(url).add(topicSlug);
+      }
+    }
+
+    return feedMap;
+  } catch (error) {
+    if (process.env.NODE_ENV !== "production") {
+      console.warn(
+        "[warn] Unexpected error loading topic feeds",
+        error instanceof Error ? error.message : error,
+      );
+    }
+    return new Map();
+  }
+}
 
 /**
  * @typedef {Object} GatherOptions
@@ -336,7 +423,12 @@ function parseFeedEntries(xml, feedUrl) {
 }
 
 
-async function fetchRss(feedUrl) {
+async function fetchRss({ url: feedUrl, topics = [] }) {
+  const topicTags = Array.isArray(topics)
+    ? topics
+        .map((topic) => String(topic ?? "").trim().toLowerCase())
+        .filter((value) => value.length > 0)
+    : [];
   try {
     const res = await fetch(feedUrl, {
       headers: { "User-Agent": "newsletter-ai-fetcher" },
@@ -376,7 +468,7 @@ async function fetchRss(feedUrl) {
         }
         const explicit = extractExplicitTags(entry);
         const generated = keywordTags(title, summary ?? "");
-        const tags = Array.from(new Set([...explicit, ...generated]));
+        const tags = Array.from(new Set([...explicit, ...generated, ...topicTags]));
         const hostname = (() => {
           try {
             return new URL(url).hostname;
@@ -447,16 +539,42 @@ function loadLocalArticles(sourceFile) {
  * @returns {Promise<ArticleCandidate[]>}
  */
 export async function gatherArticles({ feedUrls = [], noDefaultFeeds = false, sourceFile } = {}) {
-  /** @type {string[]} */
-  const feeds = [];
-  if (!noDefaultFeeds) feeds.push(...DEFAULT_FEEDS);
-  feeds.push(...feedUrls);
+  const dynamicFeedMap = await loadTopicFeedMap();
+  const feedTopicMap = new Map();
+
+  const addFeed = (url, topics = []) => {
+    if (typeof url !== "string") return;
+    const cleanUrl = url.trim();
+    if (!cleanUrl) return;
+    const entry = feedTopicMap.get(cleanUrl) ?? { url: cleanUrl, topics: new Set() };
+    for (const topic of topics) {
+      if (!topic) continue;
+      const slug = String(topic).trim().toLowerCase();
+      if (slug) entry.topics.add(slug);
+    }
+    feedTopicMap.set(cleanUrl, entry);
+  };
+
+  if (!noDefaultFeeds) {
+    DEFAULT_FEEDS.forEach((url) => addFeed(url));
+  }
+
+  feedUrls.forEach((url) => addFeed(url));
+
+  for (const [url, topicSet] of dynamicFeedMap.entries()) {
+    addFeed(url, topicSet);
+  }
+
+  const feedSources = Array.from(feedTopicMap.values()).map(({ url, topics }) => ({
+    url,
+    topics: Array.from(topics.values()),
+  }));
 
   const articles = [];
-  for (const feed of feeds) {
-    const parsed = await fetchRss(feed);
+  for (const source of feedSources) {
+    const parsed = await fetchRss(source);
     if (parsed.length === 0) {
-      console.warn(`[warn] Parsed 0 articles from ${feed}`);
+      console.warn(`[warn] Parsed 0 articles from ${source.url}`);
     }
     articles.push(...parsed);
   }
@@ -466,15 +584,25 @@ export async function gatherArticles({ feedUrls = [], noDefaultFeeds = false, so
     articles.push(...loadLocalArticles(sourceFile));
   }
 
-  const deduped = [];
-  const seen = new Set();
+  const merged = new Map();
   for (const article of articles) {
-    if (!article || seen.has(article.url)) continue;
-    seen.add(article.url);
-    deduped.push(article);
+    if (!article || typeof article.url !== "string") continue;
+    const key = article.url;
+    const existing = merged.get(key);
+    if (existing) {
+      const combinedTags = new Set([...(existing.tags || []), ...(article.tags || [])]);
+      existing.tags = Array.from(combinedTags.values());
+      if (!existing.summary && article.summary) existing.summary = article.summary;
+      if (!existing.source && article.source) existing.source = article.source;
+      continue;
+    }
+    const uniqueTags = Array.isArray(article.tags)
+      ? Array.from(new Set(article.tags.map((tag) => String(tag ?? "").trim().toLowerCase()).filter(Boolean)))
+      : [];
+    merged.set(key, { ...article, tags: uniqueTags });
   }
 
-  return deduped;
+  return Array.from(merged.values());
 }
 
 export async function ingestArticles({ supabase, articles, dryRun = false }) {
