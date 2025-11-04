@@ -7,9 +7,6 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-
-type IntlWithSupported = typeof Intl & { supportedValuesOf?: (key: string) => string[] };
 
 type PrefRow = {
   interests: string | null;
@@ -18,6 +15,12 @@ type PrefRow = {
   send_hour: number | null;
   send_minute: number | null;
   send_timezone: string | null;
+};
+
+type Schedule = {
+  hour: number;
+  minute: number;
+  timezone: string;
 };
 
 type LoadState =
@@ -34,27 +37,173 @@ function getDefaultTimezone() {
   }
 }
 
-function getTimezoneOptions(current: string) {
-  const extras = [current, "UTC", "America/New_York", "Europe/London", "Asia/Tokyo"];
-  const intl = Intl as IntlWithSupported;
-  const supported = typeof intl.supportedValuesOf === "function" ? intl.supportedValuesOf("timeZone") : [];
-  const set = new Set([...extras, ...supported]);
-  return Array.from(set.values()).sort();
+function normaliseHour(value: number | null | undefined, fallback = 9) {
+  if (typeof value === "number" && value >= 0 && value <= 23) return value;
+  return fallback;
 }
 
-function formatTime(hour?: number | null, minute?: number | null) {
-  const safeHour = typeof hour === "number" && hour >= 0 && hour <= 23 ? hour : 9;
-  const safeMinute = typeof minute === "number" && minute >= 0 && minute <= 59 ? minute : 0;
-  return `${String(safeHour).padStart(2, "0")}:${String(safeMinute).padStart(2, "0")}`;
+function normaliseMinute(value: number | null | undefined, fallback = 0) {
+  if (typeof value === "number" && value >= 0 && value <= 59) return value;
+  return fallback;
 }
 
-function parseTimeInput(value: string) {
-  const [hourStr = "9", minuteStr = "0"] = value.split(":");
-  const hour = Number.parseInt(hourStr, 10);
-  const minute = Number.parseInt(minuteStr, 10);
-  if (Number.isNaN(hour) || hour < 0 || hour > 23) return { hour: 9, minute: 0 };
-  if (Number.isNaN(minute) || minute < 0 || minute > 59) return { hour, minute: 0 };
-  return { hour, minute };
+function isValidTimezone(zone: string) {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: zone });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const TIME_REGEX = /(?:(?:around|at|@)\s*)?(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)?/i;
+const TIMEZONE_REGEX = /\b([A-Za-z]+\/[A-Za-z_]+)\b/;
+
+const TIMEZONE_KEYWORDS: Array<{ regex: RegExp; zone: string }> = [
+  { regex: /\beurope\b/i, zone: "Europe/Berlin" },
+  { regex: /\bberlin|germany|cet|cest\b/i, zone: "Europe/Berlin" },
+  { regex: /\blondon|uk|britain|gmt|bst\b/i, zone: "Europe/London" },
+  { regex: /\bnew\s*york|eastern|est|edt|nyc\b/i, zone: "America/New_York" },
+  { regex: /\bpacific|pst|pdt|los\s*angeles|sf|san\s*francisco|seattle\b/i, zone: "America/Los_Angeles" },
+  { regex: /\bchicago|central|cst|cdt\b/i, zone: "America/Chicago" },
+  { regex: /\baustin|texas\b/i, zone: "America/Chicago" },
+  { regex: /\bdenver|mountain|mst|mdt\b/i, zone: "America/Denver" },
+  { regex: /\bsingapore|sgt\b/i, zone: "Asia/Singapore" },
+  { regex: /\bdelhi|india|ist\b/i, zone: "Asia/Kolkata" },
+  { regex: /\btokyo|japan|jst\b/i, zone: "Asia/Tokyo" },
+  { regex: /\bsydney|melbourne|australia|aest|aedt\b/i, zone: "Australia/Sydney" },
+];
+
+function interpretTimeline(timeline: string, fallback: Schedule) {
+  const cleaned = (timeline || "").trim();
+  let hour = fallback.hour;
+  let minute = fallback.minute;
+  let timezone = fallback.timezone;
+  let matchedTime = false;
+  let matchedZone = false;
+
+  const lower = cleaned.toLowerCase();
+  if (lower.includes("midnight")) {
+    hour = 0;
+    minute = 0;
+    matchedTime = true;
+  } else if (lower.includes("noon")) {
+    hour = 12;
+    minute = 0;
+    matchedTime = true;
+  } else {
+    const match = cleaned.match(TIME_REGEX);
+    if (match) {
+      const rawHour = Number.parseInt(match[1], 10);
+      const rawMinute = match[2] ? Number.parseInt(match[2], 10) : 0;
+      const suffix = match[3]?.toLowerCase() ?? "";
+      if (!Number.isNaN(rawHour) && rawHour >= 0 && rawHour <= 23 && rawMinute >= 0 && rawMinute <= 59) {
+        if (suffix.startsWith("a")) {
+          hour = rawHour % 12;
+        } else if (suffix.startsWith("p")) {
+          hour = rawHour % 12 + 12;
+        } else if (rawHour === 12 && suffix.startsWith("a")) {
+          hour = 0;
+        } else if (!suffix && rawHour <= 23) {
+          hour = rawHour === 24 ? 0 : rawHour;
+        }
+        minute = rawMinute;
+        matchedTime = true;
+      }
+    }
+  }
+
+  const timezoneMatch = cleaned.match(TIMEZONE_REGEX);
+  if (timezoneMatch) {
+    const candidate = timezoneMatch[1];
+    if (candidate && isValidTimezone(candidate)) {
+      timezone = candidate;
+      matchedZone = true;
+    }
+  }
+
+  if (!matchedZone) {
+    for (const entry of TIMEZONE_KEYWORDS) {
+      if (entry.regex.test(lower) && isValidTimezone(entry.zone)) {
+        timezone = entry.zone;
+        matchedZone = true;
+        break;
+      }
+    }
+  }
+
+  const summary = buildScheduleSummary({ hour, minute, timezone }, {
+    matchedTime,
+    matchedZone,
+    hasInput: cleaned.length > 0,
+  });
+
+  return {
+    schedule: { hour, minute, timezone } satisfies Schedule,
+    matchedTime,
+    matchedZone,
+    summary,
+  };
+}
+
+function buildScheduleSummary(
+  schedule: Schedule,
+  {
+    matchedTime,
+    matchedZone,
+    hasInput,
+  }: { matchedTime: boolean; matchedZone: boolean; hasInput: boolean },
+) {
+  const timeLabel = formatTimeLabel(schedule);
+  const offsetLabel = formatOffsetLabel(schedule.timezone);
+  const base = `We'll send each digest around ${timeLabel} in ${schedule.timezone}${offsetLabel ? ` (${offsetLabel})` : ""}.`;
+
+  const notes: string[] = [];
+  if (!hasInput) {
+    notes.push("Update the timeline text above if you'd like to change this.");
+  } else {
+    if (!matchedTime) notes.push("We didn't spot a new time, so we're keeping your saved send time.");
+    if (!matchedZone) notes.push("Timezone stayed the same. Mention one (e.g. 'Europe/Berlin') to change it.");
+  }
+
+  return [base, ...notes].join(" ").trim();
+}
+
+function formatTimeLabel(schedule: Schedule) {
+  try {
+    const now = new Date();
+    const reference = new Date(Date.UTC(
+      now.getUTCFullYear(),
+      now.getUTCMonth(),
+      now.getUTCDate(),
+      schedule.hour,
+      schedule.minute,
+    ));
+    return new Intl.DateTimeFormat(undefined, {
+      hour: "numeric",
+      minute: "2-digit",
+      timeZone: schedule.timezone,
+    }).format(reference);
+  } catch {
+    return `${String(schedule.hour).padStart(2, "0")}:${String(schedule.minute).padStart(2, "0")}`;
+  }
+}
+
+function formatOffsetLabel(timezone: string) {
+  try {
+    const reference = new Date();
+    const utcDate = new Date(reference.toLocaleString("en-US", { timeZone: "UTC" }));
+    const tzDate = new Date(reference.toLocaleString("en-US", { timeZone: timezone }));
+    const diffMinutes = Math.round((tzDate.getTime() - utcDate.getTime()) / 60000);
+    if (!Number.isFinite(diffMinutes)) return "";
+    const sign = diffMinutes >= 0 ? "+" : "-";
+    const abs = Math.abs(diffMinutes);
+    const hours = Math.floor(abs / 60);
+    const minutes = abs % 60;
+    return `UTC${sign}${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+  } catch {
+    return "";
+  }
 }
 
 function getErrorMessage(error: unknown, fallback: string) {
@@ -68,15 +217,11 @@ export default function SettingsPage() {
   const [status, setStatus] = useState<LoadState>({ state: "loading" });
   const [interests, setInterests] = useState("");
   const [timeline, setTimeline] = useState("");
-  const [sendTime, setSendTime] = useState(formatTime());
-  const [timezone, setTimezone] = useState(defaultTimezone);
-  const timezoneOptions = useMemo(() => {
-    const list = getTimezoneOptions(defaultTimezone);
-    if (timezone && !list.includes(timezone)) {
-      return Array.from(new Set([...list, timezone])).sort();
-    }
-    return list;
-  }, [defaultTimezone, timezone]);
+  const [storedSchedule, setStoredSchedule] = useState<Schedule>({
+    hour: 9,
+    minute: 0,
+    timezone: defaultTimezone,
+  });
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState<string | null>(null);
   const [unsubscribed, setUnsubscribed] = useState(false);
@@ -127,8 +272,13 @@ export default function SettingsPage() {
         setInterests(prefs?.interests ?? "");
         setTimeline(prefs?.timeline ?? "");
         setUnsubscribed(Boolean(prefs?.unsubscribed));
-        setSendTime(formatTime(prefs?.send_hour, prefs?.send_minute));
-        setTimezone(prefs?.send_timezone || defaultTimezone);
+        setStoredSchedule({
+          hour: normaliseHour(prefs?.send_hour),
+          minute: normaliseMinute(prefs?.send_minute),
+          timezone: prefs?.send_timezone && isValidTimezone(prefs.send_timezone)
+            ? prefs.send_timezone
+            : defaultTimezone,
+        });
         setStatus({ state: "authed" });
       } catch (error) {
         setStatus({ state: "error", message: getErrorMessage(error, "Failed to load") });
@@ -136,6 +286,8 @@ export default function SettingsPage() {
     };
     run();
   }, [defaultTimezone]);
+
+  const interpretation = useMemo(() => interpretTimeline(timeline, storedSchedule), [timeline, storedSchedule]);
 
   async function onSave(e: React.FormEvent) {
     e.preventDefault();
@@ -149,9 +301,10 @@ export default function SettingsPage() {
       if (userError) throw userError;
       if (!user) throw new Error("Not signed in");
 
-      const { hour, minute } = parseTimeInput(sendTime);
       const interestText = interests.trim();
       const timelineText = timeline.trim();
+      const currentInterpretation = interpretTimeline(timelineText, storedSchedule);
+      const { hour, minute, timezone } = currentInterpretation.schedule;
 
       const { error } = await supabase
         .from("user_prefs")
@@ -168,6 +321,7 @@ export default function SettingsPage() {
         .single();
       if (error) throw error;
       await syncTopicsToServer(interestText, timelineText);
+      setStoredSchedule(currentInterpretation.schedule);
       setSaveMsg("Preferences saved");
     } catch (error) {
       setSaveMsg(getErrorMessage(error, "Failed to save preferences"));
@@ -192,9 +346,10 @@ export default function SettingsPage() {
       if (userError) throw userError;
       if (!user) throw new Error("Not signed in");
 
-      const { hour, minute } = parseTimeInput(sendTime);
       const interestText = interests.trim();
       const timelineText = timeline.trim();
+      const currentInterpretation = interpretTimeline(timelineText, storedSchedule);
+      const { hour, minute, timezone } = currentInterpretation.schedule;
 
       const { error } = await supabase
         .from("user_prefs")
@@ -211,6 +366,7 @@ export default function SettingsPage() {
         .single();
       if (error) throw error;
       setUnsubscribed(next);
+      setStoredSchedule(currentInterpretation.schedule);
       await syncTopicsToServer(interestText, timelineText);
       setSaveMsg(next ? "Unsubscribed" : "Resubscribed");
     } catch (error) {
@@ -285,37 +441,12 @@ export default function SettingsPage() {
                 id="timeline"
                 value={timeline}
                 onChange={(e) => setTimeline(e.target.value)}
-                placeholder="e.g., daily at 8am, weekly on Mondays, flexible"
+                placeholder="e.g., daily at 8am Pacific, every weekday at 7:30am Europe/Berlin"
                 rows={3}
               />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="send-time">Preferred send time</Label>
-              <Input
-                id="send-time"
-                type="time"
-                value={sendTime}
-                onChange={(e) => setSendTime(e.target.value || formatTime())}
-                step={300}
-              />
-              <p className="text-xs text-muted-foreground">
-                We’ll send each digest around this time in your selected timezone.
+              <p className="rounded-md bg-muted/60 px-3 py-2 text-sm text-muted-foreground">
+                {interpretation.summary}
               </p>
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="timezone">Timezone</Label>
-              <select
-                id="timezone"
-                value={timezone}
-                onChange={(e) => setTimezone(e.target.value)}
-                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-              >
-                {timezoneOptions.map((tz) => (
-                  <option key={tz} value={tz}>
-                    {tz}
-                  </option>
-                ))}
-              </select>
             </div>
             <div className="flex items-center gap-3">
               <Button type="submit" disabled={saving}>
