@@ -171,18 +171,11 @@ function buildScheduleSummary(
 
 function formatTimeLabel(schedule: Schedule) {
   try {
-    const now = new Date();
-    const reference = new Date(Date.UTC(
-      now.getUTCFullYear(),
-      now.getUTCMonth(),
-      now.getUTCDate(),
-      schedule.hour,
-      schedule.minute,
-    ));
+    const reference = new Date(Date.UTC(2020, 0, 1, schedule.hour, schedule.minute));
     return new Intl.DateTimeFormat(undefined, {
       hour: "numeric",
       minute: "2-digit",
-      timeZone: schedule.timezone,
+      timeZone: "UTC",
     }).format(reference);
   } catch {
     return `${String(schedule.hour).padStart(2, "0")}:${String(schedule.minute).padStart(2, "0")}`;
