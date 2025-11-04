@@ -104,6 +104,7 @@ create table if not exists public.articles (
   title text not null,
   url text not null,
   summary text,
+  hook_question text,
   tags jsonb,
   primary_tag text,
   source text,
@@ -116,6 +117,9 @@ alter table public.articles
 
 alter table public.articles
   add column if not exists primary_tag text;
+
+alter table public.articles
+  add column if not exists hook_question text;
 
 drop trigger if exists set_articles_updated_at on public.articles;
 create trigger set_articles_updated_at

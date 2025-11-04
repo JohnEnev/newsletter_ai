@@ -21,6 +21,7 @@ type ArticleRow = {
   title: string;
   url: string;
   summary: string | null;
+  hook_question: string | null;
   tags: string[] | null;
   primary_tag: string | null;
 };
@@ -162,6 +163,9 @@ type PreparedArticle = ArticleRow & {
   topicSlugs: string[];
   titleLc: string;
   summaryLc: string;
+  hookQuestion: string | null;
+  matchedInterestToken?: string | null;
+  matchedInterestLabel?: string | null;
 };
 
 function normaliseArticle(row: ArticleRow): PreparedArticle {
@@ -180,6 +184,9 @@ function normaliseArticle(row: ArticleRow): PreparedArticle {
     topicSlugs: [],
     titleLc: row.title?.toLowerCase?.() ?? "",
     summaryLc: row.summary?.toLowerCase?.() ?? "",
+    hookQuestion: row.hook_question ?? null,
+    matchedInterestToken: null,
+    matchedInterestLabel: null,
   };
 }
 
@@ -222,6 +229,18 @@ function expandTokenVariants(
   return Array.from(variants.values());
 }
 
+function labelInterest(
+  canonical: string,
+  original: string,
+  topicLookup: Map<string, { id: string; slug: string; display_name: string | null }>,
+) {
+  const canonicalEntry = topicLookup.get(canonical);
+  if (canonicalEntry?.display_name) return canonicalEntry.display_name;
+  const originalEntry = topicLookup.get(original);
+  if (originalEntry?.display_name) return originalEntry.display_name;
+  return toDisplayLabel(canonical || original);
+}
+
 function selectArticlesForPref(pref: PrefRow, pool: PreparedArticle[], topicLookup: Map<string, { id: string; slug: string; display_name: string | null }>) {
   const tokens = extractInterestTokens(pref.interests, { maxTokens: 12 });
   const uniqueTokens = Array.from(new Set(tokens));
@@ -232,7 +251,8 @@ function selectArticlesForPref(pref: PrefRow, pool: PreparedArticle[], topicLook
     const articles = pool.filter((article) =>
       variants.some((variant) => articleMatchesToken(article, variant)),
     );
-    return { token, canonical, articles };
+    const label = labelInterest(canonical, token, topicLookup);
+    return { token, canonical, label, articles };
   });
 
   const matchedBuckets = buckets.filter((bucket) => bucket.articles.length > 0);
@@ -240,14 +260,18 @@ function selectArticlesForPref(pref: PrefRow, pool: PreparedArticle[], topicLook
     return { articles: [], matched: false, tokens: uniqueTokens };
   }
 
-  const desiredCount = Math.min(ARTICLES_PER_USER, Math.max(2, matchedBuckets.length));
+  const desiredCount = Math.min(
+    ARTICLES_PER_USER,
+    pool.length,
+    Math.max(2, Math.min(uniqueTokens.length, matchedBuckets.length + 1)),
+  );
   const selection: PreparedArticle[] = [];
   const used = new Set<string>();
 
-  const takeFromBucket = (bucket: { token: string; articles: PreparedArticle[] }) => {
+  const takeFromBucket = (bucket: { token: string; canonical: string; label: string; articles: PreparedArticle[] }) => {
     for (const article of bucket.articles) {
       if (used.has(article.id)) continue;
-      selection.push(article);
+      selection.push({ ...article, matchedInterestToken: bucket.canonical, matchedInterestLabel: bucket.label });
       used.add(article.id);
       return true;
     }
@@ -265,6 +289,15 @@ function selectArticlesForPref(pref: PrefRow, pool: PreparedArticle[], topicLook
       while (selection.length < desiredCount && takeFromBucket(bucket)) {
         // continue drawing from this bucket while it has more matches
       }
+    }
+  }
+
+  if (selection.length < desiredCount) {
+    for (const article of pool) {
+      if (selection.length >= desiredCount) break;
+      if (used.has(article.id)) continue;
+      selection.push({ ...article, matchedInterestToken: null, matchedInterestLabel: null });
+      used.add(article.id);
     }
   }
 
@@ -327,7 +360,14 @@ function buildDigestHtml({
   timelineSummary,
 }: {
   prefs: { interests?: string | null; timeline?: string | null; unsubscribed?: boolean | null };
-  articles: { id: string; title: string; url: string; summary?: string | null }[];
+  articles: {
+    id: string;
+    title: string;
+    url: string;
+    summary?: string | null;
+    hookQuestion?: string | null;
+    matchedInterestLabel?: string | null;
+  }[];
   manageUrl: string;
   unsubscribeUrl: string;
   resubscribeUrl: string;
@@ -342,6 +382,16 @@ function buildDigestHtml({
     .map((article, index) => {
       const links = yesNoLinks[article.id];
       const number = String(index + 1).padStart(2, "0");
+      const interestChip = article.matchedInterestLabel
+        ? `<span style="display:inline-flex;align-items:center;padding:0 10px;height:24px;border-radius:999px;background:#e0f2fe;color:#0369a1;font-size:12px;font-weight:600;margin-right:10px;">${esc(article.matchedInterestLabel)}</span><span style="color:#cbd5f5;margin-right:10px;">—</span>`
+        : "";
+      const hookHtml = article.hookQuestion
+        ? `<div style="margin-top:12px;font-size:14px;line-height:1.5;color:#0f172a;"><strong style=\"color:#0369a1;\">Quick check:</strong> ${esc(article.hookQuestion)}</div>`
+        : "";
+      const summaryMargin = article.hookQuestion ? 8 : 12;
+      const summaryHtml = article.summary
+        ? `<div style=\"margin-top:${summaryMargin}px;font-size:15px;line-height:1.6;color:#475569;\">${esc(article.summary)}</div>`
+        : "";
       return `
         <tr>
           <td style="padding:0 32px;">
@@ -350,9 +400,9 @@ function buildDigestHtml({
                 <td style="padding:28px 0;">
                   <div style="font-size:12px;letter-spacing:0.2em;text-transform:uppercase;color:#94a3b8;font-weight:600;">${number}</div>
                   <div style="margin-top:8px;font-size:20px;font-weight:600;line-height:1.4;">
-                    <a href="${article.url}" style="color:#0f172a;text-decoration:none;">${esc(article.title)}</a>
+                    ${interestChip}<a href="${article.url}" style="color:#0f172a;text-decoration:none;">${esc(article.title)}</a>
                   </div>
-                  ${article.summary ? `<div style=\"margin-top:12px;font-size:15px;line-height:1.6;color:#475569;\">${esc(article.summary)}</div>` : ""}
+                  ${hookHtml}${summaryHtml}
                   <div style="margin-top:18px;">
                     <a href="${article.url}" style="display:inline-block;padding:10px 18px;background:#0ea5e9;color:#ffffff;font-size:14px;font-weight:600;text-decoration:none;border-radius:999px;">Read article →</a>
                     <span style="display:inline-block;height:0;width:12px;"></span>
@@ -541,7 +591,7 @@ export async function GET(request: Request) {
 
   const { data: rawArticles, error: artErr } = await admin
     .from("articles")
-    .select("id, title, url, summary, tags, primary_tag")
+    .select("id, title, url, summary, hook_question, tags, primary_tag")
     .order("created_at", { ascending: false })
     .limit(ARTICLE_POOL_LIMIT);
   if (artErr) {

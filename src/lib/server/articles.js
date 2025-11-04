@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import { XMLParser } from "fast-xml-parser";
 import { createClient } from "@supabase/supabase-js";
+import OpenAI from "openai";
 
 const DEFAULT_FEEDS = [
   "https://hnrss.org/frontpage",
@@ -71,6 +72,9 @@ const FALLBACK_ARTICLES = [
   },
 ];
 
+const HOOK_MODEL = process.env.OPENAI_HOOK_MODEL || "gpt-4o-mini";
+const MAX_HOOK_LENGTH = 220;
+
 function createSupabaseAdmin() {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -84,6 +88,56 @@ function createSupabaseAdmin() {
       "[warn] Failed to create Supabase client for topic feeds",
       error instanceof Error ? error.message : error,
     );
+    return null;
+  }
+}
+
+let cachedOpenAIClient = null;
+function getOpenAIClient() {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) return null;
+  if (cachedOpenAIClient) return cachedOpenAIClient;
+  cachedOpenAIClient = new OpenAI({ apiKey });
+  return cachedOpenAIClient;
+}
+
+async function generateHookQuestion({ title, summary, tags }) {
+  const client = getOpenAIClient();
+  if (!client) return null;
+
+  const trimmedTitle = String(title ?? "").trim();
+  const trimmedSummary = String(summary ?? "").trim();
+  if (!trimmedTitle && !trimmedSummary) return null;
+
+  const tagLine = Array.isArray(tags) && tags.length
+    ? `Relevant tags: ${tags.slice(0, 4).join(", ")}`
+    : "";
+
+  try {
+    const prompt = `Write one short question (max 25 words) that a reader could answer after reading the article described below.\n` +
+      `The question should invite curiosity and use plain language.\n` +
+      `Don't include explanations or extra sentences, just the question ending with a question mark.\n\n` +
+      `Title: ${trimmedTitle || "(none)"}\n` +
+      `Summary: ${trimmedSummary || "(none)"}\n${tagLine}`;
+
+    const response = await client.responses.create({
+      model: HOOK_MODEL,
+      input: prompt,
+      temperature: 0.4,
+      max_output_tokens: 120,
+    });
+
+    const raw = response.output_text?.trim();
+    if (!raw) return null;
+    let question = raw.replace(/^Question:?\s*/i, "").replace(/\s+/g, " ").trim();
+    if (!question.endsWith("?")) question = `${question}?`;
+    if (question.length < 8) return null;
+    if (question.length > MAX_HOOK_LENGTH) question = `${question.slice(0, MAX_HOOK_LENGTH - 1).trim()}?`;
+    return question;
+  } catch (error) {
+    if (process.env.NODE_ENV !== "production") {
+      console.warn("[warn] Failed to generate hook question", error instanceof Error ? error.message : error);
+    }
     return null;
   }
 }
@@ -634,12 +688,22 @@ export async function ingestArticles({ supabase, articles, dryRun = false }) {
             .map((tag) => String(tag ?? "").trim().toLowerCase())
             .filter((tag) => tag.length > 0)
         : [];
+
+      let hookQuestion = null;
+      if (!dryRun) {
+        hookQuestion = await generateHookQuestion({
+          title: article.title,
+          summary: article.summary,
+          tags,
+        });
+      }
       const { data: insertedRow, error } = await supabase
         .from("articles")
         .insert({
           title: article.title,
           url: article.url,
           summary: article.summary,
+          hook_question: hookQuestion,
           tags,
           primary_tag: derivePrimaryTag(tags),
           source: article.source,
