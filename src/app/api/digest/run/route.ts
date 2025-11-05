@@ -24,6 +24,7 @@ type ArticleRow = {
   hook_question: string | null;
   tags: string[] | null;
   primary_tag: string | null;
+  created_at: string;
 };
 
 type TopicRow = {
@@ -166,6 +167,7 @@ type PreparedArticle = ArticleRow & {
   hookQuestion: string | null;
   matchedInterestToken?: string | null;
   matchedInterestLabel?: string | null;
+  createdAtMs: number;
 };
 
 function normaliseArticle(row: ArticleRow): PreparedArticle {
@@ -187,17 +189,38 @@ function normaliseArticle(row: ArticleRow): PreparedArticle {
     hookQuestion: row.hook_question ?? null,
     matchedInterestToken: null,
     matchedInterestLabel: null,
+    createdAtMs: row.created_at ? Date.parse(row.created_at) : 0,
   };
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function containsWholeWord(text: string, token: string) {
+  if (!text || !token) return false;
+  const pattern = new RegExp(`(^|[^a-z0-9])${escapeRegExp(token)}([^a-z0-9]|$)`, "i");
+  return pattern.test(text);
 }
 
 function articleMatchesToken(article: PreparedArticle, token: string) {
   if (!token) return false;
-  if (article.normalizedTags.some((tag) => tag === token || tag.includes(token))) {
+  const tokenLc = token.toLowerCase();
+  if (article.normalizedTags.some((tag) => tag === tokenLc)) {
     return true;
   }
-  if (article.topicSlugs?.includes(token)) return true;
-  if (article.titleLc.includes(token)) return true;
-  if (article.summaryLc.includes(token)) return true;
+  if (article.topicSlugs?.includes(tokenLc)) return true;
+
+  const isShort = tokenLc.length <= 3;
+  if (!isShort) {
+    if (article.normalizedTags.some((tag) => tag.includes(tokenLc))) return true;
+    if (article.titleLc.includes(tokenLc)) return true;
+    if (article.summaryLc.includes(tokenLc)) return true;
+    return false;
+  }
+
+  if (containsWholeWord(article.titleLc, tokenLc)) return true;
+  if (containsWholeWord(article.summaryLc, tokenLc)) return true;
   return false;
 }
 
@@ -241,21 +264,42 @@ function labelInterest(
   return toDisplayLabel(canonical || original);
 }
 
-function selectArticlesForPref(pref: PrefRow, pool: PreparedArticle[], topicLookup: Map<string, { id: string; slug: string; display_name: string | null }>) {
+function buildBuckets(
+  tokens: string[],
+  source: PreparedArticle[],
+  topicLookup: Map<string, { id: string; slug: string; display_name: string | null }>,
+) {
+  return tokens.map((token) => {
+    const canonical = topicLookup.get(token)?.slug ?? token;
+    const label = labelInterest(canonical, token, topicLookup);
+    const variants = expandTokenVariants(token, topicLookup);
+    const articles = source.filter((article) =>
+      variants.some((variant) => articleMatchesToken(article, variant)),
+    );
+    return { token, canonical, label, articles };
+  });
+}
+
+function selectArticlesForPref(
+  pref: PrefRow,
+  pool: PreparedArticle[],
+  topicLookup: Map<string, { id: string; slug: string; display_name: string | null }>,
+) {
   const tokens = extractInterestTokens(pref.interests, { maxTokens: 12 });
   const uniqueTokens = Array.from(new Set(tokens));
 
-  const buckets = uniqueTokens.map((token) => {
-    const canonical = topicLookup.get(token)?.slug ?? token;
-    const variants = expandTokenVariants(token, topicLookup);
-    const articles = pool.filter((article) =>
-      variants.some((variant) => articleMatchesToken(article, variant)),
-    );
-    const label = labelInterest(canonical, token, topicLookup);
-    return { token, canonical, label, articles };
-  });
+  const lastSentMs = pref.last_digest_sent_at ? Date.parse(pref.last_digest_sent_at) : null;
+  const freshPool = lastSentMs
+    ? pool.filter((article) => Number.isFinite(article.createdAtMs) && article.createdAtMs > lastSentMs)
+    : pool;
 
-  const matchedBuckets = buckets.filter((bucket) => bucket.articles.length > 0);
+  const candidatePool = freshPool.length > 0 ? freshPool : pool;
+  const primaryBuckets = buildBuckets(uniqueTokens, candidatePool, topicLookup);
+  const fallbackBuckets = candidatePool === pool
+    ? primaryBuckets
+    : buildBuckets(uniqueTokens, pool, topicLookup);
+
+  const matchedBuckets = primaryBuckets.filter((bucket) => bucket.articles.length > 0);
   if (matchedBuckets.length === 0) {
     return { articles: [], matched: false, tokens: uniqueTokens };
   }
@@ -288,6 +332,15 @@ function selectArticlesForPref(pref: PrefRow, pool: PreparedArticle[], topicLook
       if (selection.length >= desiredCount) break;
       while (selection.length < desiredCount && takeFromBucket(bucket)) {
         // continue drawing from this bucket while it has more matches
+      }
+    }
+  }
+
+  if (selection.length < desiredCount) {
+    for (const bucket of fallbackBuckets) {
+      if (selection.length >= desiredCount) break;
+      while (selection.length < desiredCount && takeFromBucket(bucket)) {
+        // allow older articles if we ran out of fresh matches
       }
     }
   }
@@ -380,17 +433,28 @@ function buildDigestHtml({
 
   const itemsHtml = (articles || [])
     .map((article, index) => {
-      const links = yesNoLinks[article.id];
+      const links = yesNoLinks[article.id] ?? { yes: article.url, no: article.url };
       const number = String(index + 1).padStart(2, "0");
-      const interestChip = article.matchedInterestLabel
-        ? `<span style="display:inline-flex;align-items:center;padding:0 10px;height:24px;border-radius:999px;background:#e0f2fe;color:#0369a1;font-size:12px;font-weight:600;margin-right:10px;">${esc(article.matchedInterestLabel)}</span><span style="color:#cbd5f5;margin-right:10px;">—</span>`
+      const interestCell = article.matchedInterestLabel
+        ? `<td style="padding-right:12px;vertical-align:middle;">
+              <span style="display:inline-block;padding:0 10px;height:24px;line-height:24px;border-radius:999px;background:#d1fae5;color:#047857;font-size:12px;font-weight:600;">${esc(article.matchedInterestLabel)}</span>
+            </td>`
         : "";
+      const titleTable = `
+        <table role="presentation" cellpadding="0" cellspacing="0" style="margin-top:8px;">
+          <tr>
+            ${interestCell}
+            <td style="vertical-align:middle;font-size:20px;font-weight:600;line-height:1.4;">
+              <a href="${article.url}" style="color:#102a26;text-decoration:none;">${esc(article.title)}</a>
+            </td>
+          </tr>
+        </table>`;
       const hookHtml = article.hookQuestion
-        ? `<div style="margin-top:12px;font-size:14px;line-height:1.5;color:#0f172a;"><strong style=\"color:#0369a1;\">Quick check:</strong> ${esc(article.hookQuestion)}</div>`
+        ? `<div style="margin-top:12px;font-size:14px;line-height:1.5;color:#124036;"><strong style=\"color:#0f5132;\">Quick check:</strong> ${esc(article.hookQuestion)}</div>`
         : "";
       const summaryMargin = article.hookQuestion ? 8 : 12;
       const summaryHtml = article.summary
-        ? `<div style=\"margin-top:${summaryMargin}px;font-size:15px;line-height:1.6;color:#475569;\">${esc(article.summary)}</div>`
+        ? `<div style=\"margin-top:${summaryMargin}px;font-size:15px;line-height:1.6;color:#374151;\">${esc(article.summary)}</div>`
         : "";
       return `
         <tr>
@@ -399,15 +463,14 @@ function buildDigestHtml({
               <tr>
                 <td style="padding:28px 0;">
                   <div style="font-size:12px;letter-spacing:0.2em;text-transform:uppercase;color:#94a3b8;font-weight:600;">${number}</div>
-                  <div style="margin-top:8px;font-size:20px;font-weight:600;line-height:1.4;">
-                    ${interestChip}<a href="${article.url}" style="color:#0f172a;text-decoration:none;">${esc(article.title)}</a>
-                  </div>
+                  ${titleTable}
                   ${hookHtml}${summaryHtml}
                   <div style="margin-top:18px;">
-                    <a href="${article.url}" style="display:inline-block;padding:10px 18px;background:#0ea5e9;color:#ffffff;font-size:14px;font-weight:600;text-decoration:none;border-radius:999px;">Read article →</a>
-                    <span style="display:inline-block;height:0;width:12px;"></span>
-                    <a href="${links.yes}" style="font-size:13px;color:#2563eb;text-decoration:none;margin-right:12px;">👍 Helpful</a>
-                    <a href="${links.no}" style="font-size:13px;color:#2563eb;text-decoration:none;">👎 Not really</a>
+                    <a href="${article.url}" style="display:inline-block;padding:10px 18px;background:#166534;color:#f8fafc;font-size:14px;font-weight:600;text-decoration:none;border-radius:999px;">Read article →</a>
+                    <span style="display:inline-block;height:0;width:16px;"></span>
+                    <span style="font-size:13px;color:#1f2937;margin-right:12px;">Was this helpful?</span>
+                    <a href="${links.yes}" style="font-size:13px;color:#166534;text-decoration:none;margin-right:12px;">Yes</a>
+                    <a href="${links.no}" style="font-size:13px;color:#166534;text-decoration:none;">Not really</a>
                   </div>
                 </td>
               </tr>
@@ -420,7 +483,7 @@ function buildDigestHtml({
   const articleRows =
     itemsHtml ||
     `<tr>
-          <td style="padding:40px 32px;color:#475569;font-size:15px;line-height:1.6;">
+          <td style="padding:40px 32px;color:#4b5563;font-size:15px;line-height:1.6;">
             We didn’t find fresh articles that match your interests today, but we’ll keep looking.
           </td>
         </tr>`;
@@ -428,8 +491,8 @@ function buildDigestHtml({
   const interestValue = interestSummary || prefs?.interests;
   const cadenceValue = timelineSummary || prefs?.timeline;
   const detailBlocks = [
-    interestValue ? `<strong style="color:#e0f2fe;">Interests</strong><br/><span style="color:#f8fafc;opacity:0.9;">${esc(interestValue)}</span>` : "",
-    cadenceValue ? `<strong style="color:#e0f2fe;">Cadence</strong><br/><span style="color:#f8fafc;opacity:0.85;">${esc(cadenceValue)}</span>` : "",
+    interestValue ? `<strong style="color:#bbf7d0;">Interests</strong><br/><span style="color:#ecfdf5;opacity:0.9;">${esc(interestValue)}</span>` : "",
+    cadenceValue ? `<strong style="color:#bbf7d0;">Cadence</strong><br/><span style="color:#ecfdf5;opacity:0.85;">${esc(cadenceValue)}</span>` : "",
   ].filter(Boolean);
   const detailLines =
     detailBlocks.length > 0
@@ -446,7 +509,7 @@ function buildDigestHtml({
       : "";
 
   const unsubLine = prefs?.unsubscribed
-    ? `<div style="margin-top:18px;font-size:13px;color:#fef3c7;background:rgba(15,23,42,0.2);padding:10px 14px;border-radius:10px;display:inline-block;">Currently unsubscribed — resubscribe below to start receiving issues again.</div>`
+    ? `<div style="margin-top:18px;font-size:13px;color:#fef3c7;background:rgba(10,45,28,0.25);padding:10px 14px;border-radius:10px;display:inline-block;">Currently unsubscribed — resubscribe below to start receiving issues again.</div>`
     : "";
 
   return `<!doctype html>
@@ -456,13 +519,13 @@ function buildDigestHtml({
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Your Newsletter</title>
   </head>
-  <body style="margin:0;padding:0;background:#f1f5f9;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f172a;">
+  <body style="margin:0;padding:0;background:#eef2ef;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f172a;">
     <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="padding:32px 16px;">
       <tr>
         <td align="center">
-          <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="max-width:640px;background:#ffffff;border-radius:18px;border:1px solid #e2e8f0;overflow:hidden;box-shadow:0 20px 45px -30px rgba(15,23,42,0.45);">
+          <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="max-width:640px;background:#ffffff;border-radius:18px;border:1px solid #d9e2db;overflow:hidden;box-shadow:0 20px 45px -32px rgba(12,53,36,0.4);">
             <tr>
-              <td style="background:linear-gradient(135deg,#0ea5e9,#6366f1);padding:36px 32px 32px;color:#f8fafc;">
+              <td style="background:linear-gradient(135deg,#0b3d2e,#14532d);padding:36px 32px 32px;color:#f8fafc;">
                 <div style="font-size:12px;text-transform:uppercase;letter-spacing:0.28em;font-weight:600;opacity:0.8;">Newsletter AI</div>
                 <h1 style="margin:12px 0 0;font-size:30px;line-height:1.25;font-weight:700;color:#f8fafc;">Your Newsletter</h1>
                 ${detailLines}
@@ -472,13 +535,13 @@ function buildDigestHtml({
             ${articleRows}
             <tr>
               <td style="padding:28px 32px 36px;background:#f8fafc;border-top:1px solid #e2e8f0;text-align:center;">
-                <a href="${manageUrl}" style="display:inline-block;margin:4px 6px;padding:12px 20px;border-radius:999px;background:#1f2937;color:#f9fafb;font-size:14px;font-weight:600;text-decoration:none;">Manage preferences</a>
-                <a href="${unsubscribeUrl}" style="display:inline-block;margin:4px 6px;padding:12px 20px;border-radius:999px;background:#e2e8f0;color:#0f172a;font-size:14px;font-weight:600;text-decoration:none;">Unsubscribe</a>
-                <a href="${resubscribeUrl}" style="display:inline-block;margin:4px 6px;padding:12px 20px;border-radius:999px;background:#0ea5e9;color:#f8fafc;font-size:14px;font-weight:600;text-decoration:none;">Resubscribe</a>
+                <a href="${manageUrl}" style="display:inline-block;margin:4px 6px;padding:12px 20px;border-radius:999px;background:#14532d;color:#f4fdf7;font-size:14px;font-weight:600;text-decoration:none;">Manage preferences</a>
+                <a href="${unsubscribeUrl}" style="display:inline-block;margin:4px 6px;padding:12px 20px;border-radius:999px;background:#d9e2d1;color:#1f2c20;font-size:14px;font-weight:600;text-decoration:none;">Unsubscribe</a>
+                <a href="${resubscribeUrl}" style="display:inline-block;margin:4px 6px;padding:12px 20px;border-radius:999px;background:#166534;color:#f8fafc;font-size:14px;font-weight:600;text-decoration:none;">Resubscribe</a>
               </td>
             </tr>
           </table>
-          <div style="margin-top:18px;font-size:12px;color:#94a3b8;">You received this email because you signed up for Newsletter AI.</div>
+          <div style="margin-top:18px;font-size:12px;color:#6b7280;">You received this email because you signed up for Newsletter AI.</div>
         </td>
       </tr>
     </table>
@@ -591,7 +654,7 @@ export async function GET(request: Request) {
 
   const { data: rawArticles, error: artErr } = await admin
     .from("articles")
-    .select("id, title, url, summary, hook_question, tags, primary_tag")
+    .select("id, title, url, summary, hook_question, tags, primary_tag, created_at")
     .order("created_at", { ascending: false })
     .limit(ARTICLE_POOL_LIMIT);
   if (artErr) {
