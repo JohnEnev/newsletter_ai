@@ -98,6 +98,46 @@ const TOKEN_SYNONYMS: Record<string, string[]> = {
   ],
 };
 
+const FALLBACK_LIBRARY: Record<
+  string,
+  {
+    title: string;
+    summary: string;
+    url: string;
+    label?: string;
+    hookQuestion?: string;
+    tags?: string[];
+  }
+> = {
+  ai: {
+    label: "AI",
+    title: "A Primer on Where AI Stands Now",
+    summary:
+      "Researchers and companies are racing to deploy large language models, but the real breakthroughs hinge on aligning systems with human values and regulating their impact.",
+    url: "https://www.technologyreview.com/2024/01/04/1086228/what-comes-after-chatgpt/",
+    hookQuestion: "What risks do experts worry about as companies deploy more advanced AI systems?",
+    tags: ["ai", "technology", "ethics"],
+  },
+  geopolitics: {
+    label: "Geopolitics",
+    title: "How Great-Power Competition Is Shaping the World",
+    summary:
+      "Analysts argue that a renewed contest among the United States, China, and Russia is reshaping alliances, economic corridors, and regional flashpoints from the Indo-Pacific to Eastern Europe.",
+    url: "https://www.cfr.org/backgrounder/great-power-competition-renewed",
+    hookQuestion: "Which regions do analysts flag as the most volatile in the current great-power rivalry?",
+    tags: ["geopolitics", "foreign policy"],
+  },
+  history: {
+    label: "History",
+    title: "Why Studying History Still Matters",
+    summary:
+      "Understanding how previous generations confronted upheaval helps us make sense of today’s crises, from pandemics to political polarization.",
+    url: "https://www.historytoday.com/archive/feature/why-history-matters",
+    hookQuestion: "How can looking at past pandemics guide public responses to new outbreaks?",
+    tags: ["history", "society"],
+  },
+};
+
 function getTimeInTimezone(timeZone: string, reference: Date) {
   try {
     const formatter = new Intl.DateTimeFormat("en-US", {
@@ -169,6 +209,7 @@ type PreparedArticle = ArticleRow & {
   matchedInterestToken?: string | null;
   matchedInterestLabel?: string | null;
   createdAtMs: number;
+  isFallback?: boolean;
 };
 
 function normaliseArticle(row: ArticleRow): PreparedArticle {
@@ -191,6 +232,42 @@ function normaliseArticle(row: ArticleRow): PreparedArticle {
     matchedInterestToken: null,
     matchedInterestLabel: null,
     createdAtMs: row.created_at ? Date.parse(row.created_at) : 0,
+    isFallback: false,
+  };
+}
+
+function createFallbackArticle({ token, label }: { token: string; label: string }, data: {
+  title: string;
+  summary: string;
+  url: string;
+  hookQuestion?: string;
+  tags?: string[];
+}): PreparedArticle {
+  const normalizedTags = Array.isArray(data.tags)
+    ? data.tags.map((tag) => String(tag ?? "").trim().toLowerCase()).filter(Boolean)
+    : [];
+  const nowIso = new Date().toISOString();
+  const titleLc = data.title.toLowerCase();
+  const summaryLc = data.summary.toLowerCase();
+
+  return {
+    id: `fallback-${token}-${Date.now()}`,
+    title: data.title,
+    url: data.url,
+    summary: data.summary,
+    hook_question: data.hookQuestion ?? null,
+    tags: normalizedTags,
+    primary_tag: token,
+    created_at: nowIso,
+    normalizedTags,
+    topicSlugs: [token],
+    titleLc,
+    summaryLc,
+    hookQuestion: data.hookQuestion ?? null,
+    matchedInterestToken: token,
+    matchedInterestLabel: label,
+    createdAtMs: Date.now(),
+    isFallback: true,
   };
 }
 
@@ -324,15 +401,14 @@ function selectArticlesForPref(
     : buildBuckets(uniqueTokens, poolForSelection, topicLookup);
 
   const matchedBuckets = primaryBuckets.filter((bucket) => bucket.articles.length > 0);
-  if (matchedBuckets.length === 0) {
-    return { articles: [], matched: false, tokens: uniqueTokens };
-  }
-
   const desiredCount = Math.min(
     ARTICLES_PER_USER,
-    poolForSelection.length,
-    Math.max(2, Math.min(uniqueTokens.length, matchedBuckets.length + 1)),
+    poolForSelection.length || ARTICLES_PER_USER,
+    Math.max(2, Math.min(uniqueTokens.length || 2, (matchedBuckets.length || 0) + 1)),
   );
+  if (matchedBuckets.length === 0) {
+    return { articles: [], matched: false, tokens: uniqueTokens, desiredCount };
+  }
   const selection: PreparedArticle[] = [];
   const used = new Set<string>();
 
@@ -378,7 +454,7 @@ function selectArticlesForPref(
     }
   }
 
-  return { articles: selection, matched: true, tokens: uniqueTokens };
+  return { articles: selection, matched: true, tokens: uniqueTokens, desiredCount };
 }
 
 function toDisplayLabel(token: string) {
@@ -445,6 +521,7 @@ function buildDigestHtml({
     summary?: string | null;
     hookQuestion?: string | null;
     matchedInterestLabel?: string | null;
+    isFallback?: boolean;
   }[];
   manageUrl: string;
   unsubscribeUrl: string;
@@ -459,7 +536,7 @@ function buildDigestHtml({
 
   const itemsHtml = (articles || [])
     .map((article, index) => {
-      const links = yesNoLinks[article.id] ?? { yes: article.url, no: article.url };
+      const links = yesNoLinks[article.id];
       const number = String(index + 1).padStart(2, "0");
       const interestCell = article.matchedInterestLabel
         ? `<td style="padding-right:12px;vertical-align:middle;">
@@ -482,6 +559,12 @@ function buildDigestHtml({
       const summaryHtml = article.summary
         ? `<div style=\"margin-top:${summaryMargin}px;font-size:15px;line-height:1.6;color:#374151;\">${esc(article.summary)}</div>`
         : "";
+      const feedbackHtml = links
+        ? `<span style="font-size:13px;color:#1f2937;margin-right:12px;">Was this helpful?</span>
+                    <a href="${links.yes}" style="font-size:13px;color:#166534;text-decoration:none;margin-right:12px;">Yes</a>
+                    <a href="${links.no}" style="font-size:13px;color:#166534;text-decoration:none;">Not really</a>`
+        : "";
+
       return `
         <tr>
           <td style="padding:0 32px;">
@@ -494,9 +577,7 @@ function buildDigestHtml({
                   <div style="margin-top:18px;">
                     <a href="${article.url}" style="display:inline-block;padding:10px 18px;background:#166534;color:#f8fafc;font-size:14px;font-weight:600;text-decoration:none;border-radius:999px;">Read article →</a>
                     <span style="display:inline-block;height:0;width:16px;"></span>
-                    <span style="font-size:13px;color:#1f2937;margin-right:12px;">Was this helpful?</span>
-                    <a href="${links.yes}" style="font-size:13px;color:#166534;text-decoration:none;margin-right:12px;">Yes</a>
-                    <a href="${links.no}" style="font-size:13px;color:#166534;text-decoration:none;">Not really</a>
+                    ${feedbackHtml}
                   </div>
                 </td>
               </tr>
@@ -756,21 +837,40 @@ export async function GET(request: Request) {
       continue;
     }
 
-    const { articles: selectedArticles, matched, tokens } = selectArticlesForPref(pref, preparedArticles, topicLookup);
+    const selectionResult = selectArticlesForPref(pref, preparedArticles, topicLookup);
+    const { articles: initialArticles, matched: initialMatched, tokens, desiredCount } = selectionResult;
+    let matched = initialMatched;
+    let selectedArticles = [...initialArticles];
     const interestSummary = formatInterestSummary(tokens, topicLookup, pref.interests);
     const timelineSummary = formatTimelineSummary(pref.timeline);
-    const articleCount = selectedArticles.length;
 
+    const baseTokens = Array.from(new Set(tokens.map((token) => token.toLowerCase()).filter(Boolean)));
     const matchedTokenSet = new Set(
       selectedArticles
         .map((article) => article.matchedInterestToken?.toLowerCase?.())
         .filter((token): token is string => Boolean(token)),
     );
+
+    const fallbackArticles: PreparedArticle[] = [];
+    for (const token of baseTokens) {
+      if (matchedTokenSet.has(token)) continue;
+      const fallback = FALLBACK_LIBRARY[token];
+      if (!fallback) continue;
+      if (selectedArticles.length + fallbackArticles.length >= desiredCount) break;
+      const label = normaliseInterestLabel(fallback.label ?? toDisplayLabel(token), token);
+      const fallbackArticle = createFallbackArticle({ token, label }, fallback);
+      fallbackArticles.push(fallbackArticle);
+      matchedTokenSet.add(token);
+    }
+
+    if (fallbackArticles.length > 0) {
+      selectedArticles = [...selectedArticles, ...fallbackArticles];
+    }
+
     const unmatchedLabels = Array.from(
       new Set(
-        tokens
-          .map((token) => token.toLowerCase())
-          .filter((token) => token && !matchedTokenSet.has(token))
+        baseTokens
+          .filter((token) => !matchedTokenSet.has(token))
           .map((token) => {
             const entry = topicLookup.get(token);
             if (entry?.display_name) return normaliseInterestLabel(entry.display_name, token);
@@ -780,8 +880,13 @@ export async function GET(request: Request) {
       ),
     );
 
-    if (!matched || articleCount === 0) {
-      results.push({ userId: pref.user_id, email, status: "skipped", error: "No matching articles", matched, articleCount, tokens });
+    const articleCount = selectedArticles.length;
+    if (!matched && articleCount > 0) {
+      matched = true;
+    }
+
+    if (articleCount === 0) {
+      results.push({ userId: pref.user_id, email, status: "skipped", error: "No matching articles", matched: false, articleCount, tokens });
       continue;
     }
 
@@ -811,6 +916,7 @@ export async function GET(request: Request) {
 
     const yesNoLinks: Record<string, { yes: string; no: string }> = {};
     for (const article of selectedArticles) {
+      if (article.isFallback) continue;
       const yesToken = signPayload<TokenPayload>({
         user_id: pref.user_id,
         exp: Math.floor(Date.now() / 1000) + 7 * 24 * 3600,
@@ -858,7 +964,9 @@ export async function GET(request: Request) {
       const msg = await res.text().catch(() => res.statusText);
       results.push({ userId: pref.user_id, email, status: "skipped", error: msg, matched, articleCount, tokens });
     } else {
-      const articleIdsToStore = selectedArticles.map((article) => article.id);
+      const articleIdsToStore = selectedArticles
+        .filter((article) => !article.isFallback)
+        .map((article) => article.id);
       const { error: updateErr } = await admin
         .from("user_prefs")
         .update({
