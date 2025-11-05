@@ -14,6 +14,7 @@ type PrefRow = {
   send_hour: number | null;
   send_minute: number | null;
   last_digest_sent_at: string | null;
+  last_digest_article_ids: string[] | null;
 };
 
 type ArticleRow = {
@@ -157,7 +158,7 @@ function hoursSince(dateIso: string | null | undefined, now: Date) {
 }
 
 const ARTICLES_PER_USER = 5;
-const ARTICLE_POOL_LIMIT = 40;
+const ARTICLE_POOL_LIMIT = 80;
 
 type PreparedArticle = ArticleRow & {
   normalizedTags: string[];
@@ -252,16 +253,30 @@ function expandTokenVariants(
   return Array.from(variants.values());
 }
 
+function normaliseInterestLabel(label: string | null | undefined, fallback: string) {
+  const source = (label ?? fallback ?? "").trim();
+  if (!source) return "";
+  return source
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((word) => {
+      if (/^[a-z]{1,3}$/i.test(word)) return word.toUpperCase();
+      if (/^[A-Z0-9]{2,}$/.test(word)) return word;
+      return word.charAt(0).toUpperCase() + word.slice(1);
+    })
+    .join(" ");
+}
+
 function labelInterest(
   canonical: string,
   original: string,
   topicLookup: Map<string, { id: string; slug: string; display_name: string | null }>,
 ) {
   const canonicalEntry = topicLookup.get(canonical);
-  if (canonicalEntry?.display_name) return canonicalEntry.display_name;
+  if (canonicalEntry?.display_name) return normaliseInterestLabel(canonicalEntry.display_name, canonical);
   const originalEntry = topicLookup.get(original);
-  if (originalEntry?.display_name) return originalEntry.display_name;
-  return toDisplayLabel(canonical || original);
+  if (originalEntry?.display_name) return normaliseInterestLabel(originalEntry.display_name, original);
+  return normaliseInterestLabel(toDisplayLabel(canonical || original), canonical || original);
 }
 
 function buildBuckets(
@@ -288,16 +303,25 @@ function selectArticlesForPref(
   const tokens = extractInterestTokens(pref.interests, { maxTokens: 12 });
   const uniqueTokens = Array.from(new Set(tokens));
 
+  const previouslySent = new Set(
+    Array.isArray(pref.last_digest_article_ids)
+      ? pref.last_digest_article_ids.filter((value): value is string => typeof value === "string" && value.length > 0)
+      : [],
+  );
+
+  const unseenPool = pool.filter((article) => !previouslySent.has(article.id));
+  const poolForSelection = unseenPool.length > 0 ? unseenPool : pool;
+
   const lastSentMs = pref.last_digest_sent_at ? Date.parse(pref.last_digest_sent_at) : null;
   const freshPool = lastSentMs
-    ? pool.filter((article) => Number.isFinite(article.createdAtMs) && article.createdAtMs > lastSentMs)
-    : pool;
+    ? poolForSelection.filter((article) => Number.isFinite(article.createdAtMs) && article.createdAtMs > lastSentMs)
+    : poolForSelection;
 
-  const candidatePool = freshPool.length > 0 ? freshPool : pool;
+  const candidatePool = freshPool.length > 0 ? freshPool : poolForSelection;
   const primaryBuckets = buildBuckets(uniqueTokens, candidatePool, topicLookup);
-  const fallbackBuckets = candidatePool === pool
+  const fallbackBuckets = candidatePool === poolForSelection
     ? primaryBuckets
-    : buildBuckets(uniqueTokens, pool, topicLookup);
+    : buildBuckets(uniqueTokens, poolForSelection, topicLookup);
 
   const matchedBuckets = primaryBuckets.filter((bucket) => bucket.articles.length > 0);
   if (matchedBuckets.length === 0) {
@@ -306,7 +330,7 @@ function selectArticlesForPref(
 
   const desiredCount = Math.min(
     ARTICLES_PER_USER,
-    pool.length,
+    poolForSelection.length,
     Math.max(2, Math.min(uniqueTokens.length, matchedBuckets.length + 1)),
   );
   const selection: PreparedArticle[] = [];
@@ -346,7 +370,7 @@ function selectArticlesForPref(
   }
 
   if (selection.length < desiredCount) {
-    for (const article of pool) {
+    for (const article of poolForSelection) {
       if (selection.length >= desiredCount) break;
       if (used.has(article.id)) continue;
       selection.push({ ...article, matchedInterestToken: null, matchedInterestLabel: null });
@@ -374,8 +398,8 @@ function formatInterestSummary(tokens: string[], topicLookup: Map<string, { id: 
       tokens
         .map((token) => {
           const entry = topicLookup.get(token);
-          if (entry?.display_name) return entry.display_name;
-          return toDisplayLabel(token);
+          if (entry?.display_name) return normaliseInterestLabel(entry.display_name, token);
+          return normaliseInterestLabel(toDisplayLabel(token), token);
         })
         .filter((label): label is string => Boolean(label))
     )
@@ -411,6 +435,7 @@ function buildDigestHtml({
   yesNoLinks,
   interestSummary,
   timelineSummary,
+  unmatchedLabels,
 }: {
   prefs: { interests?: string | null; timeline?: string | null; unsubscribed?: boolean | null };
   articles: {
@@ -427,6 +452,7 @@ function buildDigestHtml({
   yesNoLinks: Record<string, { yes: string; no: string }>;
   interestSummary?: string | null;
   timelineSummary?: string | null;
+  unmatchedLabels?: string[];
 }) {
   const esc = (value: string | null | undefined) =>
     String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -508,6 +534,15 @@ function buildDigestHtml({
         </table>`
       : "";
 
+  const unmatchedList = Array.isArray(unmatchedLabels)
+    ? unmatchedLabels.filter((label) => typeof label === "string" && label.trim().length > 0)
+    : [];
+  const unmatchedNote = unmatchedList.length > 0
+    ? `<div style="margin-top:16px;font-size:13px;line-height:1.5;color:#1f2937;background:#e8f3ec;padding:10px 14px;border-radius:10px;display:inline-block;">No fresh matches for ${esc(
+        unmatchedList.join(" or "),
+      )} today — we’ll keep looking.</div>`
+    : "";
+
   const unsubLine = prefs?.unsubscribed
     ? `<div style="margin-top:18px;font-size:13px;color:#fef3c7;background:rgba(10,45,28,0.25);padding:10px 14px;border-radius:10px;display:inline-block;">Currently unsubscribed — resubscribe below to start receiving issues again.</div>`
     : "";
@@ -529,6 +564,7 @@ function buildDigestHtml({
                 <div style="font-size:12px;text-transform:uppercase;letter-spacing:0.28em;font-weight:600;opacity:0.8;">Newsletter AI</div>
                 <h1 style="margin:12px 0 0;font-size:30px;line-height:1.25;font-weight:700;color:#f8fafc;">Your Newsletter</h1>
                 ${detailLines}
+                ${unmatchedNote}
                 ${unsubLine}
               </td>
             </tr>
@@ -625,7 +661,7 @@ export async function GET(request: Request) {
 
   const { data: rawPrefs, error: prefsError } = await admin
     .from("user_prefs")
-    .select("user_id, interests, timeline, unsubscribed, send_timezone, send_hour, send_minute, last_digest_sent_at");
+    .select("user_id, interests, timeline, unsubscribed, send_timezone, send_hour, send_minute, last_digest_sent_at, last_digest_article_ids");
   if (prefsError) {
     return NextResponse.json({ ok: false, error: prefsError.message }, { status: 500 });
   }
@@ -725,6 +761,25 @@ export async function GET(request: Request) {
     const timelineSummary = formatTimelineSummary(pref.timeline);
     const articleCount = selectedArticles.length;
 
+    const matchedTokenSet = new Set(
+      selectedArticles
+        .map((article) => article.matchedInterestToken?.toLowerCase?.())
+        .filter((token): token is string => Boolean(token)),
+    );
+    const unmatchedLabels = Array.from(
+      new Set(
+        tokens
+          .map((token) => token.toLowerCase())
+          .filter((token) => token && !matchedTokenSet.has(token))
+          .map((token) => {
+            const entry = topicLookup.get(token);
+            if (entry?.display_name) return normaliseInterestLabel(entry.display_name, token);
+            return normaliseInterestLabel(toDisplayLabel(token), token);
+          })
+          .filter((label): label is string => Boolean(label)),
+      ),
+    );
+
     if (!matched || articleCount === 0) {
       results.push({ userId: pref.user_id, email, status: "skipped", error: "No matching articles", matched, articleCount, tokens });
       continue;
@@ -787,6 +842,7 @@ export async function GET(request: Request) {
       yesNoLinks,
       interestSummary,
       timelineSummary,
+      unmatchedLabels,
     });
 
     const res = await fetch(RESEND_ENDPOINT, {
@@ -802,9 +858,13 @@ export async function GET(request: Request) {
       const msg = await res.text().catch(() => res.statusText);
       results.push({ userId: pref.user_id, email, status: "skipped", error: msg, matched, articleCount, tokens });
     } else {
+      const articleIdsToStore = selectedArticles.map((article) => article.id);
       const { error: updateErr } = await admin
         .from("user_prefs")
-        .update({ last_digest_sent_at: new Date().toISOString() })
+        .update({
+          last_digest_sent_at: new Date().toISOString(),
+          last_digest_article_ids: articleIdsToStore,
+        })
         .eq("user_id", pref.user_id);
       if (updateErr && process.env.NODE_ENV !== "production") {
         console.warn(`Failed to stamp last_digest_sent_at for ${pref.user_id}:`, updateErr.message);

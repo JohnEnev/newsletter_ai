@@ -23,6 +23,9 @@ alter table public.user_prefs
 alter table public.user_prefs
   add column if not exists last_digest_sent_at timestamptz;
 
+alter table public.user_prefs
+  add column if not exists last_digest_article_ids jsonb;
+
 -- Keep updated_at fresh on writes
 create or replace function public.set_updated_at()
 returns trigger as $$
