@@ -840,7 +840,7 @@ export async function GET(request: Request) {
     const selectionResult = selectArticlesForPref(pref, preparedArticles, topicLookup);
     const { articles: initialArticles, matched: initialMatched, tokens, desiredCount } = selectionResult;
     let matched = initialMatched;
-    let selectedArticles = [...initialArticles];
+    const selectedArticles = [...initialArticles];
     const interestSummary = formatInterestSummary(tokens, topicLookup, pref.interests);
     const timelineSummary = formatTimelineSummary(pref.timeline);
 
@@ -851,20 +851,42 @@ export async function GET(request: Request) {
         .filter((token): token is string => Boolean(token)),
     );
 
-    const fallbackArticles: PreparedArticle[] = [];
+    const tokenCounts = new Map<string, number>();
+    for (const article of selectedArticles) {
+      const token = article.matchedInterestToken?.toLowerCase?.();
+      if (!token) continue;
+      tokenCounts.set(token, (tokenCounts.get(token) ?? 0) + 1);
+    }
+
     for (const token of baseTokens) {
       if (matchedTokenSet.has(token)) continue;
       const fallback = FALLBACK_LIBRARY[token];
       if (!fallback) continue;
-      if (selectedArticles.length + fallbackArticles.length >= desiredCount) break;
       const label = normaliseInterestLabel(fallback.label ?? toDisplayLabel(token), token);
       const fallbackArticle = createFallbackArticle({ token, label }, fallback);
-      fallbackArticles.push(fallbackArticle);
-      matchedTokenSet.add(token);
-    }
 
-    if (fallbackArticles.length > 0) {
-      selectedArticles = [...selectedArticles, ...fallbackArticles];
+      let inserted = false;
+      if (selectedArticles.length < desiredCount || selectedArticles.length < ARTICLES_PER_USER) {
+        selectedArticles.push(fallbackArticle);
+        inserted = true;
+      } else {
+        for (let i = selectedArticles.length - 1; i >= 0; i -= 1) {
+          const current = selectedArticles[i];
+          const currentToken = current.matchedInterestToken?.toLowerCase?.();
+          const currentCount = currentToken ? tokenCounts.get(currentToken) ?? 0 : 0;
+          const canReplace = !current.isFallback && (!currentToken || currentCount > 1);
+          if (canReplace) {
+            if (currentToken) tokenCounts.set(currentToken, currentCount - 1);
+            selectedArticles.splice(i, 1, fallbackArticle);
+            inserted = true;
+            break;
+          }
+        }
+      }
+
+      if (!inserted) continue;
+      matchedTokenSet.add(token);
+      tokenCounts.set(token, (tokenCounts.get(token) ?? 0) + 1);
     }
 
     const unmatchedLabels = Array.from(
