@@ -403,6 +403,8 @@ function cleanHookQuestion(raw: string | null | undefined) {
   return question;
 }
 
+type SupabaseWriter = Pick<ReturnType<typeof createClient>, "from">;
+
 let cachedOpenAIClient: OpenAI | null = null;
 function getOpenAIClient() {
   const apiKey = process.env.OPENAI_API_KEY;
@@ -414,7 +416,7 @@ function getOpenAIClient() {
 
 async function ensureHookQuestionForArticle(
   article: PreparedArticle,
-  supabase: ReturnType<typeof createClient>,
+  supabase: SupabaseWriter,
   cache: Map<string, string | null>,
 ) {
   if (article.hookQuestion) return article.hookQuestion;
