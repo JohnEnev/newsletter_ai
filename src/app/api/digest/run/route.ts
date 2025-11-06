@@ -100,42 +100,75 @@ const TOKEN_SYNONYMS: Record<string, string[]> = {
 
 const FALLBACK_LIBRARY: Record<
   string,
-  {
+  Array<{
     title: string;
     summary: string;
     url: string;
     label?: string;
     hookQuestion?: string;
     tags?: string[];
-  }
+  }>
 > = {
-  ai: {
-    label: "AI",
-    title: "A Primer on Where AI Stands Now",
-    summary:
-      "Researchers and companies are racing to deploy large language models, but the real breakthroughs hinge on aligning systems with human values and regulating their impact.",
-    url: "https://www.technologyreview.com/2024/01/04/1086228/what-comes-after-chatgpt/",
-    hookQuestion: "What risks do experts worry about as companies deploy more advanced AI systems?",
-    tags: ["ai", "technology", "ethics"],
-  },
-  geopolitics: {
-    label: "Geopolitics",
-    title: "How Great-Power Competition Is Shaping the World",
-    summary:
-      "Analysts argue that a renewed contest among the United States, China, and Russia is reshaping alliances, economic corridors, and regional flashpoints from the Indo-Pacific to Eastern Europe.",
-    url: "https://www.cfr.org/backgrounder/great-power-competition-renewed",
-    hookQuestion: "Which regions do analysts flag as the most volatile in the current great-power rivalry?",
-    tags: ["geopolitics", "foreign policy"],
-  },
-  history: {
-    label: "History",
-    title: "Why Studying History Still Matters",
-    summary:
-      "Understanding how previous generations confronted upheaval helps us make sense of today’s crises, from pandemics to political polarization.",
-    url: "https://www.historytoday.com/archive/feature/why-history-matters",
-    hookQuestion: "How can looking at past pandemics guide public responses to new outbreaks?",
-    tags: ["history", "society"],
-  },
+  ai: [
+    {
+      label: "AI",
+      title: "A Primer on Where AI Stands Now",
+      summary:
+        "Researchers and companies are racing to deploy large language models, but the real breakthroughs hinge on aligning systems with human values and regulating their impact.",
+      url: "https://www.technologyreview.com/2024/01/04/1086228/what-comes-after-chatgpt/",
+      hookQuestion: "What risks do experts worry about as companies deploy more advanced AI systems?",
+      tags: ["ai", "technology", "ethics"],
+    },
+    {
+      label: "AI",
+      title: "How Generative AI Is Rewriting Knowledge Work",
+      summary:
+        "Early studies show office workers are already offloading routine writing, brainstorming, and analytics to copilots—freeing time for higher-impact decisions but raising oversight questions.",
+      url: "https://www.theatlantic.com/technology/archive/2024/02/generative-ai-workplace-productivity/677478/",
+      hookQuestion: "Which everyday tasks are knowledge workers delegating to generative AI tools right now?",
+      tags: ["ai", "work", "productivity"],
+    },
+  ],
+  geopolitics: [
+    {
+      label: "Geopolitics",
+      title: "How Great-Power Competition Is Shaping the World",
+      summary:
+        "Analysts argue that a renewed contest among the United States, China, and Russia is reshaping alliances, economic corridors, and regional flashpoints from the Indo-Pacific to Eastern Europe.",
+      url: "https://www.cfr.org/backgrounder/great-power-competition-renewed",
+      hookQuestion: "Which regions do analysts flag as the most volatile in the current great-power rivalry?",
+      tags: ["geopolitics", "foreign policy"],
+    },
+    {
+      label: "Geopolitics",
+      title: "Why a New Nonaligned Movement Is Emerging",
+      summary:
+        "From India to Brazil, middle powers are leveraging U.S.-China rivalry to secure investment, technology, and political room to maneuver without picking sides outright.",
+      url: "https://foreignpolicy.com/2024/03/18/nonaligned-movement-global-south-diplomacy/",
+      hookQuestion: "How are middle powers using great-power rivalry to their advantage?",
+      tags: ["geopolitics", "global south"],
+    },
+  ],
+  history: [
+    {
+      label: "History",
+      title: "Why Studying History Still Matters",
+      summary:
+        "Understanding how previous generations confronted upheaval helps us make sense of today’s crises, from pandemics to political polarization.",
+      url: "https://www.historytoday.com/archive/feature/why-history-matters",
+      hookQuestion: "How can looking at past pandemics guide public responses to new outbreaks?",
+      tags: ["history", "society"],
+    },
+    {
+      label: "History",
+      title: "What the Roman Republic Teaches About Political Resilience",
+      summary:
+        "Historians outline the institutions that helped Rome survive repeated crises—and the warning signs when civic norms finally eroded.",
+      url: "https://www.historyextra.com/period/roman/roman-republic-collapse-lessons-modern-democracy/",
+      hookQuestion: "Which safeguards kept the Roman Republic functioning during repeated crises?",
+      tags: ["history", "politics"],
+    },
+  ],
 };
 
 function getTimeInTimezone(timeZone: string, reference: Date) {
@@ -356,21 +389,14 @@ function labelInterest(
   return normaliseInterestLabel(toDisplayLabel(canonical || original), canonical || original);
 }
 
-function buildBuckets(
-  tokens: string[],
-  source: PreparedArticle[],
-  topicLookup: Map<string, { id: string; slug: string; display_name: string | null }>,
-) {
-  return tokens.map((token) => {
-    const canonical = topicLookup.get(token)?.slug ?? token;
-    const label = labelInterest(canonical, token, topicLookup);
-    const variants = expandTokenVariants(token, topicLookup);
-    const articles = source.filter((article) =>
-      variants.some((variant) => articleMatchesToken(article, variant)),
-    );
-    return { token, canonical, label, articles };
-  });
-}
+type TokenEntry = {
+  token: string;
+  canonical: string;
+  canonicalLc: string;
+  label: string;
+  queue: PreparedArticle[];
+  index: number;
+};
 
 function selectArticlesForPref(
   pref: PrefRow,
@@ -395,66 +421,100 @@ function selectArticlesForPref(
     : poolForSelection;
 
   const candidatePool = freshPool.length > 0 ? freshPool : poolForSelection;
-  const primaryBuckets = buildBuckets(uniqueTokens, candidatePool, topicLookup);
-  const fallbackBuckets = candidatePool === poolForSelection
-    ? primaryBuckets
-    : buildBuckets(uniqueTokens, poolForSelection, topicLookup);
 
-  const matchedBuckets = primaryBuckets.filter((bucket) => bucket.articles.length > 0);
-  const desiredCount = Math.min(
-    ARTICLES_PER_USER,
-    poolForSelection.length || ARTICLES_PER_USER,
-    Math.max(2, Math.min(uniqueTokens.length || 2, (matchedBuckets.length || 0) + 1)),
-  );
-  if (matchedBuckets.length === 0) {
-    return { articles: [], matched: false, tokens: uniqueTokens, desiredCount };
+  if (uniqueTokens.length === 0) {
+    const slice = candidatePool.slice(0, ARTICLES_PER_USER);
+    return {
+      articles: slice,
+      tokens: uniqueTokens,
+      unmatchedTokens: [],
+      hasRealArticle: slice.some((article) => !article.isFallback),
+    };
   }
-  const selection: PreparedArticle[] = [];
-  const used = new Set<string>();
 
-  const takeFromBucket = (bucket: { token: string; canonical: string; label: string; articles: PreparedArticle[] }) => {
-    for (const article of bucket.articles) {
+  const entries = uniqueTokens.map<TokenEntry>((token) => {
+    const canonical = topicLookup.get(token)?.slug ?? token;
+    const canonicalLc = canonical.toLowerCase();
+    const label = labelInterest(canonical, token, topicLookup);
+    const variants = expandTokenVariants(token, topicLookup);
+    const queue = candidatePool.filter((article) =>
+      variants.some((variant) => articleMatchesToken(article, variant)),
+    );
+    return { token, canonical, canonicalLc, label, queue, index: 0 };
+  });
+
+  const used = new Set<string>();
+  const selection: PreparedArticle[] = [];
+  const matchedTokens = new Set<string>();
+  const fallbackUsage = new Map<string, number>();
+
+  const takeNext = (entry: TokenEntry) => {
+    while (entry.index < entry.queue.length) {
+      const article = entry.queue[entry.index++];
       if (used.has(article.id)) continue;
-      selection.push({ ...article, matchedInterestToken: bucket.canonical, matchedInterestLabel: bucket.label });
+      const enriched: PreparedArticle = {
+        ...article,
+        matchedInterestToken: entry.canonicalLc,
+        matchedInterestLabel: entry.label,
+        isFallback: article.isFallback ?? false,
+      };
+      selection.push(enriched);
       used.add(article.id);
+      matchedTokens.add(entry.canonicalLc);
       return true;
     }
     return false;
   };
 
-  for (const bucket of matchedBuckets) {
-    if (selection.length >= desiredCount) break;
-    takeFromBucket(bucket);
+  const insertFallback = (entry: TokenEntry) => {
+    const list = FALLBACK_LIBRARY[entry.canonicalLc] ?? [];
+    const usage = fallbackUsage.get(entry.canonicalLc) ?? 0;
+    const fallback = list[usage];
+    if (!fallback) return false;
+    fallbackUsage.set(entry.canonicalLc, usage + 1);
+    const label = normaliseInterestLabel(fallback.label ?? entry.label, entry.canonicalLc);
+    const fallbackArticle = createFallbackArticle({ token: entry.canonicalLc, label }, fallback);
+    selection.push(fallbackArticle);
+    matchedTokens.add(entry.canonicalLc);
+    return true;
+  };
+
+  for (const entry of entries) {
+    takeNext(entry);
   }
 
-  if (selection.length < desiredCount) {
-    for (const bucket of matchedBuckets) {
-      if (selection.length >= desiredCount) break;
-      while (selection.length < desiredCount && takeFromBucket(bucket)) {
-        // continue drawing from this bucket while it has more matches
+  for (const entry of entries) {
+    if (matchedTokens.has(entry.canonicalLc)) continue;
+    insertFallback(entry);
+  }
+
+  const targetCount = uniqueTokens.length > 1 ? uniqueTokens.length : Math.min(2, Math.max(1, ARTICLES_PER_USER));
+
+  if (uniqueTokens.length === 1) {
+    const entry = entries[0];
+    while (selection.length < targetCount) {
+      if (!takeNext(entry)) {
+        if (!insertFallback(entry)) break;
       }
     }
   }
 
-  if (selection.length < desiredCount) {
-    for (const bucket of fallbackBuckets) {
-      if (selection.length >= desiredCount) break;
-      while (selection.length < desiredCount && takeFromBucket(bucket)) {
-        // allow older articles if we ran out of fresh matches
-      }
-    }
+  const unmatchedTokens = entries
+    .filter((entry) => !matchedTokens.has(entry.canonicalLc))
+    .map((entry) => entry.canonicalLc);
+
+  const hasRealArticle = selection.some((article) => !article.isFallback);
+
+  if (uniqueTokens.length > 1 && selection.length > targetCount) {
+    selection.splice(targetCount);
   }
 
-  if (selection.length < desiredCount) {
-    for (const article of poolForSelection) {
-      if (selection.length >= desiredCount) break;
-      if (used.has(article.id)) continue;
-      selection.push({ ...article, matchedInterestToken: null, matchedInterestLabel: null });
-      used.add(article.id);
-    }
-  }
-
-  return { articles: selection, matched: true, tokens: uniqueTokens, desiredCount };
+  return {
+    articles: selection,
+    tokens: uniqueTokens,
+    unmatchedTokens,
+    hasRealArticle,
+  };
 }
 
 function toDisplayLabel(token: string) {
@@ -838,79 +898,25 @@ export async function GET(request: Request) {
     }
 
     const selectionResult = selectArticlesForPref(pref, preparedArticles, topicLookup);
-    const { articles: initialArticles, matched: initialMatched, tokens, desiredCount } = selectionResult;
-    let matched = initialMatched;
-    const selectedArticles = [...initialArticles];
+    const { articles: selectedArticles, tokens, unmatchedTokens, hasRealArticle } = selectionResult;
     const interestSummary = formatInterestSummary(tokens, topicLookup, pref.interests);
     const timelineSummary = formatTimelineSummary(pref.timeline);
-
-    const baseTokens = Array.from(new Set(tokens.map((token) => token.toLowerCase()).filter(Boolean)));
-    const matchedTokenSet = new Set(
-      selectedArticles
-        .map((article) => article.matchedInterestToken?.toLowerCase?.())
-        .filter((token): token is string => Boolean(token)),
-    );
-
-    const tokenCounts = new Map<string, number>();
-    for (const article of selectedArticles) {
-      const token = article.matchedInterestToken?.toLowerCase?.();
-      if (!token) continue;
-      tokenCounts.set(token, (tokenCounts.get(token) ?? 0) + 1);
-    }
-
-    for (const token of baseTokens) {
-      if (matchedTokenSet.has(token)) continue;
-      const fallback = FALLBACK_LIBRARY[token];
-      if (!fallback) continue;
-      const label = normaliseInterestLabel(fallback.label ?? toDisplayLabel(token), token);
-      const fallbackArticle = createFallbackArticle({ token, label }, fallback);
-
-      let inserted = false;
-      if (selectedArticles.length < desiredCount || selectedArticles.length < ARTICLES_PER_USER) {
-        selectedArticles.push(fallbackArticle);
-        inserted = true;
-      } else {
-        for (let i = selectedArticles.length - 1; i >= 0; i -= 1) {
-          const current = selectedArticles[i];
-          const currentToken = current.matchedInterestToken?.toLowerCase?.();
-          const currentCount = currentToken ? tokenCounts.get(currentToken) ?? 0 : 0;
-          const canReplace = !current.isFallback && (!currentToken || currentCount > 1);
-          if (canReplace) {
-            if (currentToken) tokenCounts.set(currentToken, currentCount - 1);
-            selectedArticles.splice(i, 1, fallbackArticle);
-            inserted = true;
-            break;
-          }
-        }
-      }
-
-      if (!inserted) continue;
-      matchedTokenSet.add(token);
-      tokenCounts.set(token, (tokenCounts.get(token) ?? 0) + 1);
-    }
-
-    const unmatchedLabels = Array.from(
-      new Set(
-        baseTokens
-          .filter((token) => !matchedTokenSet.has(token))
-          .map((token) => {
-            const entry = topicLookup.get(token);
-            if (entry?.display_name) return normaliseInterestLabel(entry.display_name, token);
-            return normaliseInterestLabel(toDisplayLabel(token), token);
-          })
-          .filter((label): label is string => Boolean(label)),
-      ),
-    );
-
     const articleCount = selectedArticles.length;
-    if (!matched && articleCount > 0) {
-      matched = true;
-    }
+
+    const unmatchedLabels = unmatchedTokens
+      .map((token) => {
+        const entry = topicLookup.get(token);
+        if (entry?.display_name) return normaliseInterestLabel(entry.display_name, token);
+        return normaliseInterestLabel(toDisplayLabel(token), token);
+      })
+      .filter((label): label is string => Boolean(label));
 
     if (articleCount === 0) {
       results.push({ userId: pref.user_id, email, status: "skipped", error: "No matching articles", matched: false, articleCount, tokens });
       continue;
     }
+
+    const matched = hasRealArticle || articleCount > 0;
 
     const manageToken = signPayload<TokenPayload>({
       user_id: pref.user_id,
