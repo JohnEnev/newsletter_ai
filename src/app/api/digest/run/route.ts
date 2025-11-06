@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { randomBytes, createHmac } from "crypto";
 import { timingSafeEqual } from "crypto";
 import { createClient } from "@supabase/supabase-js";
+import OpenAI from "openai";
 import { signPayload, type TokenPayload } from "@/lib/tokens";
 import { extractInterestTokens } from "@/lib/interests";
 
@@ -35,6 +36,7 @@ type TopicRow = {
 };
 
 const RESEND_ENDPOINT = "https://api.resend.com/emails";
+const HOOK_MODEL = process.env.OPENAI_HOOK_MODEL || "gpt-4o-mini";
 
 const TOKEN_SYNONYMS: Record<string, string[]> = {
   ai: [
@@ -387,6 +389,89 @@ function labelInterest(
   const originalEntry = topicLookup.get(original);
   if (originalEntry?.display_name) return normaliseInterestLabel(originalEntry.display_name, original);
   return normaliseInterestLabel(toDisplayLabel(canonical || original), canonical || original);
+}
+
+function cleanHookQuestion(raw: string | null | undefined) {
+  if (!raw) return null;
+  let question = raw.replace(/^Question:?\s*/i, "").replace(/\s+/g, " ").trim();
+  if (!question) return null;
+  if (!question.endsWith("?")) question = `${question}?`;
+  if (question.length < 8) return null;
+  if (question.length > 220) {
+    question = `${question.slice(0, 219).trim()}?`;
+  }
+  return question;
+}
+
+let cachedOpenAIClient: OpenAI | null = null;
+function getOpenAIClient() {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) return null;
+  if (cachedOpenAIClient) return cachedOpenAIClient;
+  cachedOpenAIClient = new OpenAI({ apiKey });
+  return cachedOpenAIClient;
+}
+
+async function ensureHookQuestionForArticle(
+  article: PreparedArticle,
+  supabase: ReturnType<typeof createClient>,
+  cache: Map<string, string | null>,
+) {
+  if (article.hookQuestion) return article.hookQuestion;
+  if (!article.title && !article.summary) return null;
+  if (!article.id || article.id.startsWith("fallback-")) return article.hookQuestion ?? null;
+
+  const cached = cache.get(article.id);
+  if (cached !== undefined) {
+    if (cached) article.hookQuestion = cached;
+    return cached;
+  }
+
+  const client = getOpenAIClient();
+  if (!client) {
+    cache.set(article.id, null);
+    return null;
+  }
+
+  const prompt =
+    "Write one short question (max 25 words) that a reader could answer after reading the article described below.\n" +
+    "The question should invite curiosity and use plain language.\n" +
+    "Don't include explanations or extra sentences, just the question ending with a question mark.\n\n" +
+    `Title: ${article.title || "(none)"}\n` +
+    `Summary: ${article.summary || "(none)"}\n` +
+    (article.matchedInterestLabel ? `Focus: ${article.matchedInterestLabel}` : "");
+
+  try {
+    const response = await client.responses.create({
+      model: HOOK_MODEL,
+      input: prompt,
+      temperature: 0.4,
+      max_output_tokens: 120,
+    });
+    const question = cleanHookQuestion(response.output_text?.trim());
+    if (question) {
+      article.hookQuestion = question;
+      cache.set(article.id, question);
+      try {
+        await supabase
+          .from("articles")
+          .update({ hook_question: question })
+          .eq("id", article.id);
+      } catch (err) {
+        if (process.env.NODE_ENV !== "production") {
+          console.warn("[warn] Failed to persist hook question", err instanceof Error ? err.message : err);
+        }
+      }
+      return question;
+    }
+  } catch (err) {
+    if (process.env.NODE_ENV !== "production") {
+      console.warn("[warn] Hook question generation failed", err instanceof Error ? err.message : err);
+    }
+  }
+
+  cache.set(article.id, null);
+  return null;
 }
 
 type TokenEntry = {
@@ -890,6 +975,8 @@ export async function GET(request: Request) {
     tokens?: string[];
   }> = [];
 
+  const hookCache = new Map<string, string | null>();
+
   for (const pref of duePrefs) {
     const email = emailLookup.get(pref.user_id);
     if (!email) {
@@ -941,6 +1028,10 @@ export async function GET(request: Request) {
     const manageUrl = makeLink("/manage", manageToken);
     const unsubscribeUrl = makeLink("/unsubscribe", unsubscribeToken);
     const resubscribeUrl = makeLink("/unsubscribe", resubscribeToken, "&action=subscribe");
+
+    for (const article of selectedArticles) {
+      await ensureHookQuestionForArticle(article, admin, hookCache);
+    }
 
     const yesNoLinks: Record<string, { yes: string; no: string }> = {};
     for (const article of selectedArticles) {
