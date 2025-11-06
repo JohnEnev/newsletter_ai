@@ -455,7 +455,7 @@ async function ensureHookQuestionForArticle(
       try {
         await supabase
           .from("articles")
-          .update({ hook_question: question })
+          .update({ hook_question: question } as never)
           .eq("id", article.id);
       } catch (err) {
         if (process.env.NODE_ENV !== "production") {
