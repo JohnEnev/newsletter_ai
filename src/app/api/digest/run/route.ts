@@ -707,9 +707,9 @@ function buildDigestHtml({
         ? `<div style=\"margin-top:${summaryMargin}px;font-size:15px;line-height:1.6;color:#374151;\">${esc(article.summary)}</div>`
         : "";
       const feedbackHtml = links
-        ? `<span style="font-size:13px;color:#1f2937;margin-right:12px;">Was this helpful?</span>
-                    <a href="${links.yes}" style="font-size:13px;color:#166534;text-decoration:none;margin-right:12px;">Yes</a>
-                    <a href="${links.no}" style="font-size:13px;color:#166534;text-decoration:none;">Not really</a>`
+        ? `<span style="display:inline-block;font-size:13px;color:#1f2937;margin-right:12px;">Was this helpful?</span>
+                    <a href="${links.yes}" style="display:inline-block;font-size:13px;color:#166534;text-decoration:none;margin-right:12px;white-space:nowrap;">Yes</a>
+                    <a href="${links.no}" style="display:inline-block;font-size:13px;color:#166534;text-decoration:none;white-space:nowrap;">No</a>`
         : "";
 
       return `
