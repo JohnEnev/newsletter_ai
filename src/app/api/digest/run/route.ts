@@ -100,8 +100,6 @@ const TOKEN_SYNONYMS: Record<string, string[]> = {
   ],
 };
 
-type SupabaseWriter = Pick<ReturnType<typeof createClient>, "from">;
-
 const FALLBACK_LIBRARY: Record<
   string,
   Array<{
