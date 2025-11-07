@@ -631,6 +631,15 @@ function formatInterestSummary(tokens: string[], topicLookup: Map<string, { id: 
   return (raw || "").trim();
 }
 
+
+function formatHeaderDate(date: Date, timeZone: string) {
+  try {
+    return new Intl.DateTimeFormat('en-US', { month: 'long', day: 'numeric', timeZone }).format(date);
+  } catch {
+    return new Intl.DateTimeFormat('en-US', { month: 'long', day: 'numeric' }).format(date);
+  }
+}
+
 function formatTimelineSummary(timeline: string | null | undefined) {
   if (!timeline) return "";
   const value = timeline.trim();
@@ -656,6 +665,7 @@ function buildDigestHtml({
   unsubscribeUrl,
   resubscribeUrl,
   yesNoLinks,
+  headerDate,
   interestSummary,
   timelineSummary,
   unmatchedLabels,
@@ -674,6 +684,7 @@ function buildDigestHtml({
   unsubscribeUrl: string;
   resubscribeUrl: string;
   yesNoLinks: Record<string, { yes: string; no: string }>;
+  headerDate?: string | null;
   interestSummary?: string | null;
   timelineSummary?: string | null;
   unmatchedLabels?: string[];
@@ -700,7 +711,7 @@ function buildDigestHtml({
           </tr>
         </table>`;
       const hookHtml = article.hookQuestion
-        ? `<div style="margin-top:12px;font-size:14px;line-height:1.5;color:#124036;"><strong style=\"color:#0f5132;\">Quick check:</strong> ${esc(article.hookQuestion)}</div>`
+        ? `<div style="margin-top:12px;font-size:14px;line-height:1.5;color:#124036;"><strong style=\"color:#0f5132;\">Question to explore:</strong> ${esc(article.hookQuestion)}</div>`
         : "";
       const summaryMargin = article.hookQuestion ? 8 : 12;
       const summaryHtml = article.summary
@@ -790,7 +801,7 @@ function buildDigestHtml({
             <tr>
               <td style="background:linear-gradient(135deg,#0b3d2e,#14532d);padding:36px 32px 32px;color:#f8fafc;">
                 <div style="font-size:12px;text-transform:uppercase;letter-spacing:0.28em;font-weight:600;opacity:0.8;">Newsletter AI</div>
-                <h1 style="margin:12px 0 0;font-size:30px;line-height:1.25;font-weight:700;color:#f8fafc;">Your Newsletter</h1>
+                <h1 style="margin:12px 0 0;font-size:28px;line-height:1.2;font-weight:700;color:#f8fafc;">Daily brief for ${esc(headerDate)}</h1>
                 ${detailLines}
                 ${unmatchedNote}
                 ${unsubLine}
@@ -986,6 +997,9 @@ export async function GET(request: Request) {
       continue;
     }
 
+    const timezone = pref.send_timezone || "UTC";
+    const headerDate = formatHeaderDate(now, timezone);
+
     const selectionResult = selectArticlesForPref(pref, preparedArticles, topicLookup);
     const { articles: selectedArticles, tokens, unmatchedTokens, hasRealArticle } = selectionResult;
     const interestSummary = formatInterestSummary(tokens, topicLookup, pref.interests);
@@ -1067,6 +1081,7 @@ export async function GET(request: Request) {
       unsubscribeUrl,
       resubscribeUrl,
       yesNoLinks,
+      headerDate,
       interestSummary,
       timelineSummary,
       unmatchedLabels,
