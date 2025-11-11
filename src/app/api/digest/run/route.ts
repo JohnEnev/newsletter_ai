@@ -316,27 +316,6 @@ function containsWholeWord(text: string, token: string) {
   return pattern.test(text);
 }
 
-function articleMatchesToken(article: PreparedArticle, token: string) {
-  if (!token) return false;
-  const tokenLc = token.toLowerCase();
-  if (article.normalizedTags.some((tag) => tag === tokenLc)) {
-    return true;
-  }
-  if (article.topicSlugs?.includes(tokenLc)) return true;
-
-  const isShort = tokenLc.length <= 3;
-  if (!isShort) {
-    if (article.normalizedTags.some((tag) => tag.includes(tokenLc))) return true;
-    if (article.titleLc.includes(tokenLc)) return true;
-    if (article.summaryLc.includes(tokenLc)) return true;
-    return false;
-  }
-
-  if (containsWholeWord(article.titleLc, tokenLc)) return true;
-  if (containsWholeWord(article.summaryLc, tokenLc)) return true;
-  return false;
-}
-
 function expandTokenVariants(
   token: string,
   topicLookup: Map<string, { id: string; slug: string; display_name: string | null }>,
@@ -499,6 +478,37 @@ type TokenEntry = {
   index: number;
 };
 
+const PRIMARY_TOKEN_WEIGHT = 3;
+const TITLE_MATCH_WEIGHT = 2;
+const SUMMARY_MATCH_WEIGHT = 1;
+const KEYWORD_THRESHOLD = 3;
+
+function scoreArticleMatch(article: PreparedArticle, tokenVariants: string[], canonical: string) {
+  let score = 0;
+  const canonicalLc = canonical.toLowerCase();
+  if (article.normalizedTags.some((tag) => tag === canonicalLc)) score += PRIMARY_TOKEN_WEIGHT;
+  if (article.topicSlugs?.includes(canonicalLc)) score += PRIMARY_TOKEN_WEIGHT;
+
+  const variants = tokenVariants
+    .map((variant) => variant.trim().toLowerCase())
+    .filter((variant, index, self) => variant.length > 0 && self.indexOf(variant) === index);
+  for (const variant of variants) {
+    if (variant === canonicalLc) continue;
+    if (article.normalizedTags.some((tag) => tag === variant)) {
+      score += PRIMARY_TOKEN_WEIGHT;
+      continue;
+    }
+    if (variant.length <= 3) {
+      if (containsWholeWord(article.titleLc, variant)) score += TITLE_MATCH_WEIGHT;
+      if (containsWholeWord(article.summaryLc, variant)) score += SUMMARY_MATCH_WEIGHT;
+    } else {
+      if (article.titleLc.includes(variant)) score += TITLE_MATCH_WEIGHT;
+      if (article.summaryLc.includes(variant)) score += SUMMARY_MATCH_WEIGHT;
+    }
+  }
+  return score;
+}
+
 function selectArticlesForPref(
   pref: PrefRow,
   pool: PreparedArticle[],
@@ -538,9 +548,16 @@ function selectArticlesForPref(
     const canonicalLc = canonical.toLowerCase();
     const label = labelInterest(canonical, token, topicLookup);
     const variants = expandTokenVariants(token, topicLookup);
-    const queue = candidatePool.filter((article) =>
-      variants.some((variant) => articleMatchesToken(article, variant)),
-    );
+
+    const queue = candidatePool
+      .map((article) => ({ article, score: scoreArticleMatch(article, variants, canonical) }))
+      .filter((entry) => entry.score >= KEYWORD_THRESHOLD)
+      .sort((a, b) => {
+        if (b.score !== a.score) return b.score - a.score;
+        return b.article.createdAtMs - a.article.createdAtMs;
+      })
+      .map((entry) => entry.article);
+
     return { token, canonical, canonicalLc, label, queue, index: 0 };
   });
 
