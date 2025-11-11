@@ -75,6 +75,50 @@ const FALLBACK_ARTICLES = [
 const HOOK_MODEL = process.env.OPENAI_HOOK_MODEL || "gpt-4o-mini";
 const MAX_HOOK_LENGTH = 220;
 
+const PAYWALL_KEYWORDS = [
+  "paywall",
+  "subscriber",
+  "subscription",
+  "premium",
+  "members-only",
+  "digital-only",
+  "register to read",
+];
+
+const PAYWALL_URL_HINTS = ["/paywall", "/premium", "/subscribe", "?share=1"];
+
+const PAYWALL_DOMAINS = new Set(
+  (process.env.PAYWALL_DOMAIN_DENYLIST || "wsj.com,economist.com,barrons.com,theinformation.com,ft.com")
+    .split(/[,\s]+/)
+    .map((entry) => entry.trim().toLowerCase())
+    .filter(Boolean),
+);
+
+function articleLooksPaywalled({ url, tags = [], title = "" }) {
+  const normalizedTags = tags.map((tag) => String(tag ?? "").toLowerCase());
+  if (normalizedTags.some((tag) => PAYWALL_KEYWORDS.some((keyword) => tag.includes(keyword)))) {
+    return true;
+  }
+  const lowerTitle = title.toLowerCase();
+  if (PAYWALL_KEYWORDS.some((keyword) => lowerTitle.includes(keyword))) {
+    return true;
+  }
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.toLowerCase();
+    if (PAYWALL_DOMAINS.has(host) || PAYWALL_DOMAINS.has(host.replace(/^www\./, ""))) {
+      return true;
+    }
+    const pathAndQuery = `${parsed.pathname}${parsed.search}`.toLowerCase();
+    if (PAYWALL_URL_HINTS.some((hint) => pathAndQuery.includes(hint))) {
+      return true;
+    }
+  } catch {
+    // ignore
+  }
+  return false;
+}
+
 function createSupabaseAdmin() {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -523,6 +567,12 @@ async function fetchRss({ url: feedUrl, topics = [] }) {
         const explicit = extractExplicitTags(entry);
         const generated = keywordTags(title, summary ?? "");
         const tags = Array.from(new Set([...explicit, ...generated, ...topicTags]));
+        if (articleLooksPaywalled({ url, tags, title })) {
+          if (process.env.NODE_ENV !== "production") {
+            console.log(`[skip] Paywalled article filtered: ${url}`);
+          }
+          return null;
+        }
         const hostname = (() => {
           try {
             return new URL(url).hostname;
