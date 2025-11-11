@@ -476,6 +476,19 @@ async function ensureHookQuestionForArticle(
   return null;
 }
 
+async function recordInterestGaps(
+  admin: ReturnType<typeof createClient>,
+  slugs: string[],
+  userId: string,
+) {
+  if (!Array.isArray(slugs) || slugs.length === 0) return;
+  const rows = slugs.map((slug) => ({ slug, user_id: userId }));
+  const { error } = await admin.from("interest_gap_reports").insert(rows);
+  if (error && process.env.NODE_ENV !== "production") {
+    console.warn("[warn] Failed to log interest gaps", error.message);
+  }
+}
+
 type TokenEntry = {
   token: string;
   canonical: string;
@@ -691,6 +704,7 @@ function buildDigestHtml({
 }) {
   const esc = (value: string | null | undefined) =>
     String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const friendlyDate = headerDate || formatHeaderDate(new Date(), "UTC");
 
   const itemsHtml = (articles || [])
     .map((article, index) => {
@@ -801,7 +815,7 @@ function buildDigestHtml({
             <tr>
               <td style="background:linear-gradient(135deg,#0b3d2e,#14532d);padding:36px 32px 32px;color:#f8fafc;">
                 <div style="font-size:12px;text-transform:uppercase;letter-spacing:0.28em;font-weight:600;opacity:0.8;">Newsletter AI</div>
-                <h1 style="margin:12px 0 0;font-size:28px;line-height:1.2;font-weight:700;color:#f8fafc;">Daily brief for ${esc(headerDate)}</h1>
+                <h1 style="margin:12px 0 0;font-size:28px;line-height:1.2;font-weight:700;color:#f8fafc;">Daily brief for ${esc(friendlyDate)}</h1>
                 ${detailLines}
                 ${unmatchedNote}
                 ${unsubLine}
@@ -1013,6 +1027,8 @@ export async function GET(request: Request) {
         return normaliseInterestLabel(toDisplayLabel(token), token);
       })
       .filter((label): label is string => Boolean(label));
+
+    await recordInterestGaps(admin, unmatchedTokens, pref.user_id);
 
     if (articleCount === 0) {
       results.push({ userId: pref.user_id, email, status: "skipped", error: "No matching articles", matched: false, articleCount, tokens });

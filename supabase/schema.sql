@@ -196,6 +196,16 @@ create table if not exists public.article_topic_feeds (
   updated_at timestamptz default now() not null
 );
 
+create table if not exists public.interest_gap_reports (
+  id uuid primary key default gen_random_uuid(),
+  slug text not null,
+  user_id uuid references auth.users(id) on delete set null,
+  reported_at timestamptz not null default now()
+);
+
+create index if not exists interest_gap_reports_slug_idx on public.interest_gap_reports(slug);
+create index if not exists interest_gap_reports_reported_idx on public.interest_gap_reports(reported_at desc);
+
 create table if not exists public.user_interest_topics (
   user_id uuid not null references auth.users(id) on delete cascade,
   topic_id uuid not null references public.article_topics(id) on delete cascade,
