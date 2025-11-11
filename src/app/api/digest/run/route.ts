@@ -404,6 +404,7 @@ function cleanHookQuestion(raw: string | null | undefined) {
 }
 
 type SupabaseWriter = Pick<ReturnType<typeof createClient>, "from">;
+type RecordInterestSupabase = Pick<ReturnType<typeof createClient>, "from">;
 
 let cachedOpenAIClient: OpenAI | null = null;
 function getOpenAIClient() {
@@ -477,7 +478,7 @@ async function ensureHookQuestionForArticle(
 }
 
 async function recordInterestGaps(
-  admin: ReturnType<typeof createClient>,
+  admin: RecordInterestSupabase,
   slugs: string[],
   userId: string,
 ) {
