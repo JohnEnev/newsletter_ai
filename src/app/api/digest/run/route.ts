@@ -483,7 +483,7 @@ async function recordInterestGaps(
 ) {
   if (!Array.isArray(slugs) || slugs.length === 0) return;
   const rows = slugs.map((slug) => ({ slug, user_id: userId }));
-  const { error } = await admin.from("interest_gap_reports").insert(rows);
+  const { error } = await admin.from("interest_gap_reports").insert(rows as never[]);
   if (error && process.env.NODE_ENV !== "production") {
     console.warn("[warn] Failed to log interest gaps", error.message);
   }
