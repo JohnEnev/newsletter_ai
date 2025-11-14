@@ -37,6 +37,12 @@ type TopicRow = {
 
 const RESEND_ENDPOINT = "https://api.resend.com/emails";
 const HOOK_MODEL = process.env.OPENAI_HOOK_MODEL || "gpt-4o-mini";
+const LINK_HEALTH_TIMEOUT_MS = (() => {
+  const raw = Number.parseInt(process.env.LINK_HEALTH_TIMEOUT_MS || "4500", 10);
+  if (Number.isNaN(raw) || raw < 1500) return 4500;
+  return Math.min(raw, 15000);
+})();
+const LINK_HEALTH_USER_AGENT = process.env.LINK_HEALTH_USER_AGENT || "newsletter-ai-link-check/1.0";
 
 const TOKEN_SYNONYMS: Record<string, string[]> = {
   ai: [
@@ -75,6 +81,23 @@ const TOKEN_SYNONYMS: Record<string, string[]> = {
     "culture history",
     "timeline",
     "past events",
+  ],
+  biology: [
+    "biology",
+    "bio",
+    "life sciences",
+    "life science",
+    "biological",
+    "bioscience",
+    "genetics",
+    "molecular biology",
+  ],
+  biotech: [
+    "biotech",
+    "biotechnology",
+    "synthetic biology",
+    "bioengineering",
+    "genetic engineering",
   ],
   economics: [
     "economics",
@@ -134,11 +157,11 @@ const FALLBACK_LIBRARY: Record<
   geopolitics: [
     {
       label: "Geopolitics",
-      title: "How Great-Power Competition Is Shaping the World",
+      title: "What the New Era of Great-Power Competition Looks Like",
       summary:
-        "Analysts argue that a renewed contest among the United States, China, and Russia is reshaping alliances, economic corridors, and regional flashpoints from the Indo-Pacific to Eastern Europe.",
-      url: "https://www.cfr.org/backgrounder/great-power-competition-renewed",
-      hookQuestion: "Which regions do analysts flag as the most volatile in the current great-power rivalry?",
+        "Strategists outline how U.S.-China rivalry, Russia’s campaigns, and the alignment of middle powers are reshaping trade routes, military postures, and technological blocs.",
+      url: "https://www.csis.org/analysis/new-era-great-power-competition",
+      hookQuestion: "Which pressure points define today’s contests between major powers?",
       tags: ["geopolitics", "foreign policy"],
     },
     {
@@ -169,6 +192,26 @@ const FALLBACK_LIBRARY: Record<
       url: "https://www.historyextra.com/period/roman/roman-republic-collapse-lessons-modern-democracy/",
       hookQuestion: "Which safeguards kept the Roman Republic functioning during repeated crises?",
       tags: ["history", "politics"],
+    },
+  ],
+  biology: [
+    {
+      label: "Biology",
+      title: "How CRISPR Gene Editing Reached the Clinic",
+      summary:
+        "Regulators recently cleared the first CRISPR-based therapy for patients with sickle cell disease, marking a milestone for genetic medicine after a decade of lab work.",
+      url: "https://www.npr.org/2023/12/12/1199269572/us-approves-first-crispr-gene-editing-treatment",
+      hookQuestion: "Why is the first approved CRISPR therapy such a pivotal moment for biology?",
+      tags: ["biology", "genetics", "crispr"],
+    },
+    {
+      label: "Biology",
+      title: "Why the Human Microbiome Matters",
+      summary:
+        "Researchers are uncovering how trillions of microbes living in and on us influence immunity, metabolism, and even the effectiveness of certain drugs.",
+      url: "https://www.nature.com/scitable/topicpage/the-human-microbiome-and-its-role-in-health-2379/",
+      hookQuestion: "How does the microbiome shape the way our immune system behaves?",
+      tags: ["biology", "microbiome", "health"],
     },
   ],
 };
@@ -304,6 +347,16 @@ function createFallbackArticle({ token, label }: { token: string; label: string 
     createdAtMs: Date.now(),
     isFallback: true,
   };
+}
+
+function nextFallbackArticle(token: string, label: string, usage: Map<string, number>) {
+  const list = FALLBACK_LIBRARY[token];
+  if (!Array.isArray(list) || list.length === 0) return null;
+  const attempts = usage.get(token) ?? 0;
+  const entry = list[attempts % list.length];
+  usage.set(token, attempts + 1);
+  const normalizedLabel = normaliseInterestLabel(entry.label ?? label, token);
+  return createFallbackArticle({ token, label: normalizedLabel }, entry);
 }
 
 function escapeRegExp(value: string) {
@@ -469,6 +522,78 @@ async function recordInterestGaps(
   }
 }
 
+async function probeUrl(url: string, method: "HEAD" | "GET") {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), LINK_HEALTH_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, {
+      method,
+      redirect: "follow",
+      signal: controller.signal,
+      headers: {
+        "User-Agent": LINK_HEALTH_USER_AGENT,
+        ...(method === "GET" ? { Accept: "text/html,application/xhtml+xml" } : {}),
+      },
+    });
+    if (res.status >= 200 && res.status < 400) return true;
+    if (method === "HEAD" && (res.status === 405 || res.status === 501)) return undefined;
+    if (res.status >= 500) return false;
+    return false;
+  } catch (err) {
+    if (process.env.NODE_ENV !== "production") {
+      console.warn("[warn] Link probe failed", err instanceof Error ? err.message : err);
+    }
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function isUrlReachable(url: string, cache: Map<string, boolean>) {
+  if (!url) return false;
+  if (cache.has(url)) return cache.get(url) ?? false;
+  let reachable = await probeUrl(url, "HEAD");
+  if (reachable === undefined) {
+    reachable = await probeUrl(url, "GET");
+  }
+  const ok = Boolean(reachable);
+  cache.set(url, ok);
+  return ok;
+}
+
+async function ensureReachableArticles(
+  articles: PreparedArticle[],
+  fallbackUsage: Map<string, number>,
+  cache: Map<string, boolean>,
+) {
+  if (articles.length === 0) return articles;
+  const checks = await Promise.all(
+    articles.map(async (article) => {
+      if (article.isFallback || !article.url) {
+        return { article, ok: true };
+      }
+      const ok = await isUrlReachable(article.url, cache);
+      return { article, ok };
+    }),
+  );
+
+  const sanitized: PreparedArticle[] = [];
+  for (const { article, ok } of checks) {
+    if (ok) {
+      sanitized.push(article);
+      continue;
+    }
+    const token = article.matchedInterestToken?.toLowerCase?.();
+    if (!token) continue;
+    const label = article.matchedInterestLabel || toDisplayLabel(token);
+    const fallback = nextFallbackArticle(token, label, fallbackUsage);
+    if (fallback) {
+      sanitized.push(fallback);
+    }
+  }
+  return sanitized;
+}
+
 type TokenEntry = {
   token: string;
   canonical: string;
@@ -585,13 +710,8 @@ function selectArticlesForPref(
   };
 
   const insertFallback = (entry: TokenEntry) => {
-    const list = FALLBACK_LIBRARY[entry.canonicalLc] ?? [];
-    const usage = fallbackUsage.get(entry.canonicalLc) ?? 0;
-    const fallback = list[usage];
-    if (!fallback) return false;
-    fallbackUsage.set(entry.canonicalLc, usage + 1);
-    const label = normaliseInterestLabel(fallback.label ?? entry.label, entry.canonicalLc);
-    const fallbackArticle = createFallbackArticle({ token: entry.canonicalLc, label }, fallback);
+    const fallbackArticle = nextFallbackArticle(entry.canonicalLc, entry.label, fallbackUsage);
+    if (!fallbackArticle) return false;
     selection.push(fallbackArticle);
     matchedTokens.add(entry.canonicalLc);
     return true;
@@ -632,6 +752,7 @@ function selectArticlesForPref(
     tokens: uniqueTokens,
     unmatchedTokens,
     hasRealArticle,
+    fallbackUsage,
   };
 }
 
@@ -1010,6 +1131,7 @@ export async function GET(request: Request) {
     }
   }
 
+  const linkHealthCache = new Map<string, boolean>();
   const results: Array<{
     userId: string;
     email?: string;
@@ -1033,7 +1155,14 @@ export async function GET(request: Request) {
     const headerDate = formatHeaderDate(now, timezone);
 
     const selectionResult = selectArticlesForPref(pref, preparedArticles, topicLookup);
-    const { articles: selectedArticles, tokens, unmatchedTokens, hasRealArticle } = selectionResult;
+    const { tokens, unmatchedTokens, fallbackUsage } = selectionResult;
+    let selectedArticles = selectionResult.articles;
+    let hasRealArticle = selectionResult.hasRealArticle;
+
+    if (selectedArticles.length > 0) {
+      selectedArticles = await ensureReachableArticles(selectedArticles, fallbackUsage, linkHealthCache);
+      hasRealArticle = selectedArticles.some((article) => !article.isFallback);
+    }
     const interestSummary = formatInterestSummary(tokens, topicLookup, pref.interests);
     const timelineSummary = formatTimelineSummary(pref.timeline);
     const articleCount = selectedArticles.length;

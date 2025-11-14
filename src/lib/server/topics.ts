@@ -138,6 +138,20 @@ export async function syncUserTopics({
     return;
   }
 
+  const slugs = topics.map((topic) => topic.slug);
+  const existingSlugs = new Set<string>();
+  if (slugs.length > 0) {
+    const { data: existingRows } = await supabase
+      .from("article_topics")
+      .select("slug")
+      .in("slug", slugs);
+    if (Array.isArray(existingRows)) {
+      existingRows.forEach((row) => {
+        if (row?.slug) existingSlugs.add(row.slug);
+      });
+    }
+  }
+
   const upsertPayload = topics.map((topic) => ({
     slug: topic.slug,
     display_name: topic.display_name || titleize(topic.slug),
@@ -181,6 +195,15 @@ export async function syncUserTopics({
       .insert(linkValues);
     if (insertErr && process.env.NODE_ENV !== "production") {
       console.warn("[topics] Failed to insert user_interest_topics", insertErr.message);
+    }
+  }
+
+  const newSlugs = slugs.filter((slug) => slug && !existingSlugs.has(slug));
+  if (newSlugs.length > 0) {
+    const rows = newSlugs.map((slug) => ({ slug, user_id: userId }));
+    const { error: gapErr } = await supabase.from("interest_gap_reports").insert(rows as never[]);
+    if (gapErr && process.env.NODE_ENV !== "production") {
+      console.warn("[topics] Failed to enqueue gap reports", gapErr.message);
     }
   }
 }
