@@ -72,14 +72,16 @@ const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const openaiApiKey = process.env.OPENAI_API_KEY;
 const discoveryModel = process.env.OPENAI_DISCOVERY_MODEL || process.env.OPENAI_HOOK_MODEL || "gpt-4o-mini";
+const perplexityApiKey = process.env.PERPLEXITY_API_KEY;
+const perplexityModel = process.env.PERPLEXITY_MODEL || "sonar";
 
 if (!supabaseUrl || !serviceRoleKey) usage("Missing Supabase env");
-if (!openaiApiKey) usage("OPENAI_API_KEY required");
+if (!openaiApiKey && !perplexityApiKey) usage("Need OPENAI_API_KEY or PERPLEXITY_API_KEY");
 
 const admin = createClient(supabaseUrl, serviceRoleKey, {
   auth: { autoRefreshToken: false, persistSession: false },
 });
-const openai = new OpenAI({ apiKey: openaiApiKey });
+const openai = openaiApiKey ? new OpenAI({ apiKey: openaiApiKey }) : null;
 
 async function main() {
   let targets = Array.from(slugs.values()).filter(Boolean);
@@ -95,21 +97,24 @@ async function main() {
       admin,
       openai,
       model: discoveryModel,
+      perplexityKey: perplexityApiKey,
+      perplexityModel,
       limitPerSlug,
       dryRun,
     });
 
     if (result.errors.length > 0) {
       result.errors.forEach((err) => console.warn(`[warn] ${slug}: ${err}`));
-      continue;
     }
 
+    const providerLabel = result.provider ? ` via ${result.provider}` : "";
+
     if (result.added.length > 0) {
-      result.added.forEach((url) => console.log(`[add] ${url}`));
+      result.added.forEach((url) => console.log(`[add${providerLabel}] ${url}`));
     } else if (result.requested === 0) {
-      console.log(`[warn] Model returned no feeds for ${slug}`);
+      console.log(`[warn] Model returned no feeds for ${slug}${providerLabel}`);
     } else {
-      console.log(`[info] No new feeds added for ${slug}`);
+      console.log(`[info] No new feeds added for ${slug}${providerLabel}`);
     }
 
     result.skipped.forEach((entry) => {

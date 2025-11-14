@@ -81,18 +81,19 @@ export async function GET(request: Request) {
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
   const openaiApiKey = process.env.OPENAI_API_KEY;
   const discoveryModel = process.env.OPENAI_DISCOVERY_MODEL || process.env.OPENAI_HOOK_MODEL || "gpt-4o-mini";
+  const perplexityKey = process.env.PERPLEXITY_API_KEY;
+  const perplexityModel = process.env.PERPLEXITY_MODEL || "sonar";
 
   if (!supabaseUrl || !serviceRoleKey) {
     return NextResponse.json({ ok: false, error: "Missing Supabase env" }, { status: 500 });
   }
-  if (!openaiApiKey) {
-    return NextResponse.json({ ok: false, error: "OPENAI_API_KEY not configured" }, { status: 500 });
+  if (!openaiApiKey && !perplexityKey) {
+    return NextResponse.json({ ok: false, error: "No discovery model configured" }, { status: 500 });
   }
-
   const admin = createClient(supabaseUrl, serviceRoleKey, {
     auth: { autoRefreshToken: false, persistSession: false },
   });
-  const openai = new OpenAI({ apiKey: openaiApiKey });
+  const openai = openaiApiKey ? new OpenAI({ apiKey: openaiApiKey }) : null;
 
   const targets = explicitSlugs.slice(0, maxTopics);
   if ((fromQueue && targets.length < maxTopics) || targets.length === 0) {
@@ -120,6 +121,8 @@ export async function GET(request: Request) {
       admin,
       openai,
       model: discoveryModel,
+      perplexityKey,
+      perplexityModel,
       limitPerSlug,
       dryRun,
     });

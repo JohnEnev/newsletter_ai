@@ -290,6 +290,14 @@ type PreparedArticle = ArticleRow & {
   isFallback?: boolean;
 };
 
+type SelectionResult = {
+  articles: PreparedArticle[];
+  tokens: string[];
+  unmatchedTokens: string[];
+  hasRealArticle: boolean;
+  fallbackUsage: Map<string, number>;
+};
+
 function normaliseArticle(row: ArticleRow): PreparedArticle {
   const normalizedTags = Array.isArray(row.tags)
     ? row.tags
@@ -638,7 +646,7 @@ function selectArticlesForPref(
   pref: PrefRow,
   pool: PreparedArticle[],
   topicLookup: Map<string, { id: string; slug: string; display_name: string | null }>,
-) {
+): SelectionResult {
   const tokens = extractInterestTokens(pref.interests, { maxTokens: 12 });
   const uniqueTokens = Array.from(new Set(tokens));
 

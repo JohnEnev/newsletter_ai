@@ -206,6 +206,20 @@ create table if not exists public.interest_gap_reports (
 create index if not exists interest_gap_reports_slug_idx on public.interest_gap_reports(slug);
 create index if not exists interest_gap_reports_reported_idx on public.interest_gap_reports(reported_at desc);
 
+create table if not exists public.feed_discovery_audit (
+  id uuid primary key default gen_random_uuid(),
+  slug text not null,
+  provider text,
+  requested smallint,
+  added smallint,
+  skipped smallint,
+  errors jsonb,
+  metadata jsonb,
+  created_at timestamptz default now() not null
+);
+
+create index if not exists feed_discovery_audit_slug_idx on public.feed_discovery_audit(slug, created_at desc);
+
 create table if not exists public.user_interest_topics (
   user_id uuid not null references auth.users(id) on delete cascade,
   topic_id uuid not null references public.article_topics(id) on delete cascade,
