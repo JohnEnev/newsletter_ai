@@ -16,10 +16,13 @@ function parseNumber(value: string | null, fallback: number, { min, max }: { min
 }
 
 async function verifyCronSignature(request: Request, secret: string, allowUnsigned: boolean) {
-  if (!secret) return false;
-  const signature = request.headers.get("x-vercel-signature");
+  const cronHeader = request.headers.get("x-vercel-cron");
   const vercelId = request.headers.get("x-vercel-id");
-  if (allowUnsigned && vercelId && !signature) return true;
+  if (!secret) {
+    return Boolean(allowUnsigned && cronHeader && vercelId);
+  }
+  const signature = request.headers.get("x-vercel-signature");
+  if (allowUnsigned && vercelId && !signature && cronHeader) return true;
   if (!signature) return false;
   const body = await request.clone().text();
   const digest = createHmac("sha256", secret).update(body).digest();
@@ -51,8 +54,12 @@ export async function GET(request: Request) {
   const manualMatch = runSecret && (providedSecret === runSecret || bearerToken === runSecret);
 
   const cronSecret = process.env.VERCEL_CRON_SECRET || runSecret;
-  const allowUnsigned = process.env.ALLOW_VERCEL_INTERNAL_CRON === "1";
-  const cronMatch = await verifyCronSignature(request, cronSecret, Boolean(allowUnsigned));
+  const hasCronHeader = Boolean(request.headers.get("x-vercel-cron"));
+  const hasVercelId = Boolean(request.headers.get("x-vercel-id"));
+  const allowUnsigned = Boolean(
+    process.env.ALLOW_VERCEL_INTERNAL_CRON === "1" || (!cronSecret && hasCronHeader && hasVercelId),
+  );
+  const cronMatch = await verifyCronSignature(request, cronSecret, allowUnsigned);
 
   if (!manualMatch && !cronMatch) {
     return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
@@ -74,18 +81,19 @@ export async function GET(request: Request) {
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
   const openaiApiKey = process.env.OPENAI_API_KEY;
   const discoveryModel = process.env.OPENAI_DISCOVERY_MODEL || process.env.OPENAI_HOOK_MODEL || "gpt-4o-mini";
+  const perplexityKey = process.env.PERPLEXITY_API_KEY;
+  const perplexityModel = process.env.PERPLEXITY_MODEL || "sonar";
 
   if (!supabaseUrl || !serviceRoleKey) {
     return NextResponse.json({ ok: false, error: "Missing Supabase env" }, { status: 500 });
   }
-  if (!openaiApiKey) {
-    return NextResponse.json({ ok: false, error: "OPENAI_API_KEY not configured" }, { status: 500 });
+  if (!openaiApiKey && !perplexityKey) {
+    return NextResponse.json({ ok: false, error: "No discovery model configured" }, { status: 500 });
   }
-
   const admin = createClient(supabaseUrl, serviceRoleKey, {
     auth: { autoRefreshToken: false, persistSession: false },
   });
-  const openai = new OpenAI({ apiKey: openaiApiKey });
+  const openai = openaiApiKey ? new OpenAI({ apiKey: openaiApiKey }) : null;
 
   const targets = explicitSlugs.slice(0, maxTopics);
   if ((fromQueue && targets.length < maxTopics) || targets.length === 0) {
@@ -113,6 +121,8 @@ export async function GET(request: Request) {
       admin,
       openai,
       model: discoveryModel,
+      perplexityKey,
+      perplexityModel,
       limitPerSlug,
       dryRun,
     });

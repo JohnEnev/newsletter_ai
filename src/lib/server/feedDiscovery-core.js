@@ -34,9 +34,9 @@ export async function validateFeed(url, fetchImpl = fetch) {
     const xml = await res.text();
     const entries = summariseFeed(xml);
     if (entries < 3) {
-      return { ok: false, reason: "Too few entries" };
+      return { ok: false, reason: "Too few entries", entries };
     }
-    return { ok: true };
+    return { ok: true, entries };
   } catch (err) {
     return { ok: false, reason: err instanceof Error ? err.message : String(err) };
   }
@@ -53,8 +53,8 @@ function parseJsonFromResponse(text) {
   }
 }
 
-export async function askForFeeds(slug, openai, model) {
-  if (!openai) return [];
+async function askOpenAIForFeeds(slug, openai, model) {
+  if (!openai) return { feeds: [], provider: "openai" };
   const prompt =
     `Suggest up to 3 high-quality RSS or Atom feeds focused on ${slug}. ` +
     `Respond ONLY with a JSON array where each item has feed_url, source, and reason fields.`;
@@ -66,14 +66,86 @@ export async function askForFeeds(slug, openai, model) {
   });
   const raw = response.output_text?.trim();
   const parsed = parseJsonFromResponse(raw || "");
-  if (!Array.isArray(parsed)) return [];
-  return parsed
+  if (!Array.isArray(parsed)) {
+    return { feeds: [], provider: "openai" };
+  }
+  const feeds = parsed
     .map((entry) => ({
       feed_url: entry.feed_url || entry.url,
       source: entry.source || entry.title || "unknown",
       reason: entry.reason || entry.summary || "",
     }))
     .filter((entry) => typeof entry.feed_url === "string" && entry.feed_url.startsWith("http"));
+  return { feeds, provider: "openai" };
+}
+
+async function askPerplexityForFeeds(slug, apiKey, model = "sonar", fetchImpl = fetch) {
+  if (!apiKey || !fetchImpl) return { feeds: [], provider: "perplexity" };
+  const prompt =
+    `Suggest up to 3 high-quality RSS or Atom feeds focused on ${slug}. ` +
+    `Respond ONLY with a JSON array where each item has feed_url, source, and reason fields.`;
+  const response = await fetchImpl("https://api.perplexity.ai/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model,
+      temperature: 0,
+      messages: [
+        { role: "system", content: "You are a research assistant that outputs clean JSON." },
+        { role: "user", content: prompt },
+      ],
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(`Perplexity HTTP ${response.status}`);
+  }
+  const data = await response.json();
+  const text = data?.choices?.[0]?.message?.content?.trim();
+  const parsed = parseJsonFromResponse(text || "");
+  if (!Array.isArray(parsed)) {
+    return { feeds: [], provider: "perplexity" };
+  }
+  const feeds = parsed
+    .map((entry) => ({
+      feed_url: entry.feed_url || entry.url,
+      source: entry.source || entry.title || "unknown",
+      reason: entry.reason || entry.summary || "",
+    }))
+    .filter((entry) => typeof entry.feed_url === "string" && entry.feed_url.startsWith("http"));
+  return { feeds, provider: "perplexity" };
+}
+
+async function suggestFeeds({ slug, openai, openaiModel, perplexityKey, perplexityModel, fetchImpl }) {
+  const providers = [];
+  if (openai) {
+    providers.push({ name: "openai", fn: () => askOpenAIForFeeds(slug, openai, openaiModel) });
+  }
+  if (perplexityKey) {
+    providers.push({
+      name: "perplexity",
+      fn: () => askPerplexityForFeeds(slug, perplexityKey, perplexityModel, fetchImpl),
+    });
+  }
+  if (providers.length === 0) return { feeds: [], provider: null };
+
+  let lastProvider = null;
+  for (const provider of providers) {
+    lastProvider = provider.name;
+    try {
+      const result = await provider.fn();
+      if (Array.isArray(result.feeds) && result.feeds.length > 0) {
+        return { feeds: result.feeds, provider: provider.name };
+      }
+    } catch (err) {
+      if (process.env.NODE_ENV !== "production") {
+        console.warn(`[feeds] Provider ${provider.name} failed`, err instanceof Error ? err.message : err);
+      }
+    }
+  }
+  return { feeds: [], provider: lastProvider };
 }
 
 export async function ensureTopic(admin, slug, displayName) {
@@ -87,7 +159,7 @@ export async function ensureTopic(admin, slug, displayName) {
   return data?.id;
 }
 
-export async function insertFeed(admin, topicId, slug, feed, dryRun) {
+export async function insertFeed(admin, topicId, slug, feed, dryRun, metadataExtras = {}) {
   if (dryRun) return { inserted: true, dryRun: true };
   const { error } = await admin
     .from("article_topic_feeds")
@@ -95,7 +167,12 @@ export async function insertFeed(admin, topicId, slug, feed, dryRun) {
       topic_id: topicId,
       feed_url: feed.feed_url,
       status: "pending",
-      metadata: { auto_discovered: true, source: feed.source, note: feed.reason },
+      metadata: {
+        auto_discovered: true,
+        source: feed.source,
+        note: feed.reason,
+        ...metadataExtras,
+      },
     });
   if (error) {
     if (error.code === "23505") {
@@ -154,10 +231,13 @@ export async function discoverFeedsForSlug({
   admin,
   openai,
   model,
+  perplexityKey,
+  perplexityModel = "sonar",
   limitPerSlug = 2,
   dryRun = false,
   fetchImpl = fetch,
   clearGapOnSuccess = true,
+  logAttempts = true,
 }) {
   const normalized = toSlug(slug);
   if (!normalized) {
@@ -170,6 +250,7 @@ export async function discoverFeedsForSlug({
     added: [],
     skipped: [],
     errors: [],
+    provider: null,
   };
 
   let topicId;
@@ -184,14 +265,17 @@ export async function discoverFeedsForSlug({
     return result;
   }
 
-  let feeds = [];
-  try {
-    feeds = await askForFeeds(normalized, openai, model);
-  } catch (err) {
-    result.errors.push(err instanceof Error ? err.message : String(err));
-    return result;
-  }
+  const suggestion = await suggestFeeds({
+    slug: normalized,
+    openai,
+    openaiModel: model,
+    perplexityKey,
+    perplexityModel,
+    fetchImpl,
+  });
 
+  const feeds = suggestion.feeds || [];
+  result.provider = suggestion.provider;
   result.requested = feeds.length;
   if (feeds.length === 0) {
     return result;
@@ -219,7 +303,11 @@ export async function discoverFeedsForSlug({
     }
 
     try {
-      const inserted = await insertFeed(admin, topicId, normalized, candidate, dryRun);
+      const inserted = await insertFeed(admin, topicId, normalized, candidate, dryRun, {
+        discovery_provider: result.provider,
+        validation_entries: validation.entries ?? null,
+        validated_at: new Date().toISOString(),
+      });
       if (inserted.inserted) {
         addedCount += 1;
         result.added.push(url);
@@ -235,5 +323,37 @@ export async function discoverFeedsForSlug({
     await admin.from("interest_gap_reports").delete().eq("slug", normalized);
   }
 
+  if (!dryRun && logAttempts) {
+    await recordDiscoveryAttempt(admin, {
+      slug: normalized,
+      provider: result.provider,
+      requested: feeds.length,
+      added: addedCount,
+      skipped: result.skipped.length,
+      errors: result.errors,
+    });
+  }
+
   return result;
+}
+
+export async function recordDiscoveryAttempt(admin, payload) {
+  try {
+    await admin.from("feed_discovery_audit").insert({
+      slug: payload.slug,
+      provider: payload.provider,
+      requested: payload.requested,
+      added: payload.added,
+      skipped: payload.skipped,
+      errors: payload.errors,
+      metadata: payload,
+    });
+  } catch (err) {
+    if (process.env.NODE_ENV !== "production") {
+      console.warn(
+        "[feeds] Failed to record discovery attempt",
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
 }

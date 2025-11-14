@@ -1,5 +1,6 @@
 const SEGMENT_SPLIT = /[\n,;]+/;
 const WORD_CHARS = /[a-z0-9]+/gi;
+const MAX_PHRASE_WORDS = 4;
 
 const STOP_WORDS = new Set([
   "a",
@@ -44,8 +45,16 @@ const STOP_WORDS = new Set([
   "asia",
 ]);
 
+function slugify(value: string) {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/-{2,}/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
 function sanitiseWord(word: string) {
-  return word.toLowerCase().replace(/[^a-z0-9]+/g, "");
+  return slugify(word).replace(/-/g, "");
 }
 
 export function extractInterestTokens(
@@ -58,30 +67,34 @@ export function extractInterestTokens(
   const tokens: string[] = [];
 
   function addToken(raw: string | null | undefined) {
-    const token = (raw ?? "").trim().toLowerCase();
-    if (!token) return;
-    if (token.length < 2) return;
-    if (token.includes(" ")) return;
-    if (STOP_WORDS.has(token)) return;
-    if (/\d/.test(token)) return;
-    if (seen.has(token)) return;
+    const token = slugify(raw ?? "");
+    if (!token) return false;
+    if (token.length < 2) return false;
+    if (!token.includes("-") && STOP_WORDS.has(token)) return false;
+    if (/\d/.test(token) && token !== "web3" && !token.includes("-")) return false;
+    if (seen.has(token)) return false;
     seen.add(token);
     tokens.push(token);
+    return true;
   }
 
   const segments = interests.split(SEGMENT_SPLIT).map((segment) => segment.trim()).filter(Boolean);
   for (const segment of segments) {
-    addToken(segment.replace(/\s+/g, " "));
+    if (tokens.length >= maxTokens) return tokens;
+
+    const normalised = segment.replace(/\s+/g, " ").trim();
+    const wordsInSegment = normalised.split(/\s+/).filter(Boolean);
+    const multiWord = wordsInSegment.length > 1 && wordsInSegment.length <= MAX_PHRASE_WORDS;
+    const phraseAdded = addToken(normalised);
 
     const cleaned = segment.toLowerCase();
     const words = cleaned.match(WORD_CHARS) || [];
     for (const word of words) {
+      if (tokens.length >= maxTokens) return tokens;
+      if (multiWord && phraseAdded) continue;
       const slug = sanitiseWord(word);
       if (slug.length >= 2 && !STOP_WORDS.has(slug)) addToken(slug);
-      if (tokens.length >= maxTokens) return tokens;
     }
-
-    if (tokens.length >= maxTokens) return tokens;
   }
 
   return tokens.slice(0, maxTokens);
