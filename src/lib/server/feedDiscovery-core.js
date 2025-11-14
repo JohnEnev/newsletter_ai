@@ -347,7 +347,7 @@ export async function recordDiscoveryAttempt(admin, payload) {
       skipped: payload.skipped,
       errors: payload.errors,
       metadata: payload,
-    } as never);
+    });
   } catch (err) {
     if (process.env.NODE_ENV !== "production") {
       console.warn(
