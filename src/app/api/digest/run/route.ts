@@ -673,6 +673,7 @@ function selectArticlesForPref(
       tokens: uniqueTokens,
       unmatchedTokens: [],
       hasRealArticle: slice.some((article) => !article.isFallback),
+      fallbackUsage: new Map<string, number>(),
     };
   }
 
