@@ -85,6 +85,25 @@ export function extractInterestTokens(
     const normalised = segment.replace(/\s+/g, " ").trim();
     const wordsInSegment = normalised.split(/\s+/).filter(Boolean);
     const multiWord = wordsInSegment.length > 1 && wordsInSegment.length <= MAX_PHRASE_WORDS;
+    const listy = wordsInSegment.length > MAX_PHRASE_WORDS || ((segment.match(/\band\b/gi) || []).length >= 2);
+
+    if (listy) {
+      const parts = normalised.split(/\s*(?:,|&|and)\s+/i).map((p) => p.trim()).filter(Boolean);
+      for (const part of parts) {
+        if (tokens.length >= maxTokens) return tokens;
+        const added = addToken(part);
+        const subWords = part.toLowerCase().match(WORD_CHARS) || [];
+        if (!added) {
+          for (const word of subWords) {
+            if (tokens.length >= maxTokens) return tokens;
+            const slug = sanitiseWord(word);
+            if (slug.length >= 2 && !STOP_WORDS.has(slug)) addToken(slug);
+          }
+        }
+      }
+      continue;
+    }
+
     const phraseAdded = addToken(normalised);
 
     const cleaned = segment.toLowerCase();
