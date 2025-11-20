@@ -94,6 +94,21 @@ const PAYWALL_DOMAINS = new Set(
     .filter(Boolean),
 );
 
+const PAYWALL_PROBE_DOMAINS = new Set(
+  (process.env.PAYWALL_HTML_PROBE_DOMAINS || "ft.com,wsj.com,bloomberg.com,nytimes.com,economist.com")
+    .split(/[,\s]+/)
+    .map((entry) => entry.trim().toLowerCase())
+    .filter(Boolean),
+);
+
+const PAYWALL_HTML_KEYWORDS = (process.env.PAYWALL_HTML_KEYWORDS
+  || "subscribe to continue,subscribe now,log in to continue,already a subscriber,sign in to read")
+  .split(/[,|]+/)
+  .map((entry) => entry.trim().toLowerCase())
+  .filter(Boolean);
+
+const PAYWALL_PROBE_TIMEOUT_MS = Number.parseInt(process.env.PAYWALL_PROBE_TIMEOUT_MS || "2500", 10);
+
 function articleLooksPaywalled({ url, tags = [], title = "" }) {
   const normalizedTags = tags.map((tag) => String(tag ?? "").toLowerCase());
   if (normalizedTags.some((tag) => PAYWALL_KEYWORDS.some((keyword) => tag.includes(keyword)))) {
@@ -117,6 +132,41 @@ function articleLooksPaywalled({ url, tags = [], title = "" }) {
     // ignore
   }
   return false;
+}
+
+function shouldProbePaywall(hostname) {
+  if (!hostname) return false;
+  const bare = hostname.replace(/^www\./, "");
+  return PAYWALL_PROBE_DOMAINS.has(bare);
+}
+
+async function probeHtmlPaywall(url) {
+  if (!PAYWALL_HTML_KEYWORDS.length) return false;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), PAYWALL_PROBE_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, {
+      method: "GET",
+      redirect: "follow",
+      signal: controller.signal,
+      headers: {
+        "User-Agent": "newsletter-ai-paywall-check",
+        Accept: "text/html,application/xhtml+xml",
+      },
+    });
+    if (!res.ok) return res.status === 402;
+    const snippet = (await res.text()).slice(0, 50000).toLowerCase();
+    if (!snippet) return false;
+    if (snippet.includes("<meta name=\"metered_paywall\"")) return true;
+    return PAYWALL_HTML_KEYWORDS.some((keyword) => snippet.includes(keyword));
+  } catch (err) {
+    if (process.env.NODE_ENV !== "production") {
+      console.warn("[warn] Paywall probe failed", err instanceof Error ? err.message : err);
+    }
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function createSupabaseAdmin() {
@@ -540,8 +590,8 @@ async function fetchRss({ url: feedUrl, topics = [] }) {
     const entries = parseFeedEntries(xml, feedUrl);
     if (entries.length === 0) return [];
 
-    return entries
-      .map(({ entry }) => {
+    const processed = await Promise.all(
+      entries.map(async ({ entry }) => {
         const rawTitle = extractText(entry?.title);
         const rawLink = extractLinkValue(entry?.link);
         const rawGuid = extractText(entry?.guid);
@@ -567,12 +617,6 @@ async function fetchRss({ url: feedUrl, topics = [] }) {
         const explicit = extractExplicitTags(entry);
         const generated = keywordTags(title, summary ?? "");
         const tags = Array.from(new Set([...explicit, ...generated, ...topicTags]));
-        if (articleLooksPaywalled({ url, tags, title })) {
-          if (process.env.NODE_ENV !== "production") {
-            console.log(`[skip] Paywalled article filtered: ${url}`);
-          }
-          return null;
-        }
         const hostname = (() => {
           try {
             return new URL(url).hostname;
@@ -584,6 +628,23 @@ async function fetchRss({ url: feedUrl, topics = [] }) {
             }
           }
         })();
+
+        if (articleLooksPaywalled({ url, tags, title })) {
+          if (process.env.NODE_ENV !== "production") {
+            console.log(`[skip] Paywalled article filtered: ${url}`);
+          }
+          return null;
+        }
+
+        if (shouldProbePaywall(hostname)) {
+          const htmlBlocked = await probeHtmlPaywall(url);
+          if (htmlBlocked) {
+            if (process.env.NODE_ENV !== "production") {
+              console.log(`[skip] HTML paywall detected: ${url}`);
+            }
+            return null;
+          }
+        }
         return {
           title,
           url,
@@ -592,7 +653,9 @@ async function fetchRss({ url: feedUrl, topics = [] }) {
           source: hostname,
         };
       })
-      .filter(Boolean);
+    );
+
+    return processed.filter(Boolean);
   } catch (err) {
     console.warn(`[warn] Exception fetching ${feedUrl}: ${err instanceof Error ? err.message : err}`);
     if (err instanceof Error && err.cause) {
