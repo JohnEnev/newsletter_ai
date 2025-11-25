@@ -88,14 +88,16 @@ const PAYWALL_KEYWORDS = [
 const PAYWALL_URL_HINTS = ["/paywall", "/premium", "/subscribe", "?share=1"];
 
 const PAYWALL_DOMAINS = new Set(
-  (process.env.PAYWALL_DOMAIN_DENYLIST || "wsj.com,economist.com,barrons.com,theinformation.com,ft.com")
+  (process.env.PAYWALL_DOMAIN_DENYLIST
+    || "wsj.com,economist.com,barrons.com,theinformation.com,ft.com,foreignpolicy.com,foreignaffairs.com,technologyreview.com,newyorker.com,nytimes.com")
     .split(/[,\s]+/)
     .map((entry) => entry.trim().toLowerCase())
     .filter(Boolean),
 );
 
 const PAYWALL_PROBE_DOMAINS = new Set(
-  (process.env.PAYWALL_HTML_PROBE_DOMAINS || "ft.com,wsj.com,bloomberg.com,nytimes.com,economist.com")
+  (process.env.PAYWALL_HTML_PROBE_DOMAINS
+    || "ft.com,wsj.com,bloomberg.com,nytimes.com,economist.com,foreignpolicy.com,foreignaffairs.com,technologyreview.com,historytoday.com,newyorker.com")
     .split(/[,\s]+/)
     .map((entry) => entry.trim().toLowerCase())
     .filter(Boolean),
