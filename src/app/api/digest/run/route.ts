@@ -177,21 +177,21 @@ const FALLBACK_LIBRARY: Record<
   history: [
     {
       label: "History",
-      title: "Why Studying History Still Matters",
+      title: "Why Learning History Keeps Democracies Healthy",
       summary:
-        "Understanding how previous generations confronted upheaval helps us make sense of today’s crises, from pandemics to political polarization.",
-      url: "https://www.historytoday.com/archive/feature/why-history-matters",
-      hookQuestion: "How can looking at past pandemics guide public responses to new outbreaks?",
-      tags: ["history", "society"],
+        "Smithsonian historians argue that revisiting past mistakes and social movements gives citizens the context they need to spot patterns of backsliding today.",
+      url: "https://www.smithsonianmag.com/history/why-history-matters-180981886/",
+      hookQuestion: "How does studying prior eras strengthen today’s civic life?",
+      tags: ["history", "civics"],
     },
     {
       label: "History",
-      title: "What the Roman Republic Teaches About Political Resilience",
+      title: "Why History Matters for Modern Policy",
       summary:
-        "Historians outline the institutions that helped Rome survive repeated crises—and the warning signs when civic norms finally eroded.",
-      url: "https://www.historyextra.com/period/roman/roman-republic-collapse-lessons-modern-democracy/",
-      hookQuestion: "Which safeguards kept the Roman Republic functioning during repeated crises?",
-      tags: ["history", "politics"],
+        "Brookings scholars outline how leaders who understand long-run context craft better decisions on war, technology, and social change.",
+      url: "https://www.brookings.edu/articles/why-history-matters/",
+      hookQuestion: "How can historical perspective keep today’s policy debates grounded?",
+      tags: ["history", "policy"],
     },
   ],
   biology: [
@@ -208,9 +208,9 @@ const FALLBACK_LIBRARY: Record<
       label: "Biology",
       title: "Why the Human Microbiome Matters",
       summary:
-        "Researchers are uncovering how trillions of microbes living in and on us influence immunity, metabolism, and even the effectiveness of certain drugs.",
-      url: "https://www.nature.com/scitable/topicpage/the-human-microbiome-and-its-role-in-health-2379/",
-      hookQuestion: "How does the microbiome shape the way our immune system behaves?",
+        "NIH researchers explain how the trillions of microbes living with us steer immune responses, metabolism, and even the success of some medicines.",
+      url: "https://www.nih.gov/news-events/nih-research-matters/why-human-microbiome-matters",
+      hookQuestion: "How does the microbiome influence the way our immune system behaves?",
       tags: ["biology", "microbiome", "health"],
     },
   ],

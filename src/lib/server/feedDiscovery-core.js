@@ -56,7 +56,10 @@ function parseJsonFromResponse(text) {
 async function askOpenAIForFeeds(slug, openai, model) {
   if (!openai) return { feeds: [], provider: "openai" };
   const prompt =
-    `Suggest up to 3 high-quality RSS or Atom feeds focused on ${slug}. ` +
+    `Suggest up to 10 high-quality RSS or Atom feeds focused on ${slug}. ` +
+    `The feeds should be from a variety of sources, and should be all in English. ` +
+    `The feeds should be ALWAYS LINK TO FREE ARTICLES - NEVER PAYWALLED ARTICLES. ` +
+    `If the feeds can aggreate other feeds, even better - but only if they are free and in English. ` +
     `Respond ONLY with a JSON array where each item has feed_url, source, and reason fields.`;
   const response = await openai.responses.create({
     model,
@@ -120,14 +123,14 @@ async function askPerplexityForFeeds(slug, apiKey, model = "sonar", fetchImpl = 
 
 async function suggestFeeds({ slug, openai, openaiModel, perplexityKey, perplexityModel, fetchImpl }) {
   const providers = [];
-  if (openai) {
-    providers.push({ name: "openai", fn: () => askOpenAIForFeeds(slug, openai, openaiModel) });
-  }
   if (perplexityKey) {
     providers.push({
       name: "perplexity",
       fn: () => askPerplexityForFeeds(slug, perplexityKey, perplexityModel, fetchImpl),
     });
+  }
+  if (openai) {
+    providers.push({ name: "openai", fn: () => askOpenAIForFeeds(slug, openai, openaiModel) });
   }
   if (providers.length === 0) return { feeds: [], provider: null };
 
