@@ -85,7 +85,7 @@ async function askOpenAIForFeeds(slug, openai, model) {
 async function askPerplexityForFeeds(slug, apiKey, model = "sonar", fetchImpl = fetch) {
   if (!apiKey || !fetchImpl) return { feeds: [], provider: "perplexity" };
   const prompt =
-    `Suggest up to 3 high-quality RSS or Atom feeds focused on ${slug}. ` +
+    `Suggest up to 10 high-quality RSS or Atom feeds focused on ${slug}. ` +
     `Respond ONLY with a JSON array where each item has feed_url, source, and reason fields.`;
   const response = await fetchImpl("https://api.perplexity.ai/chat/completions", {
     method: "POST",
@@ -169,7 +169,7 @@ export async function insertFeed(admin, topicId, slug, feed, dryRun, metadataExt
     .insert({
       topic_id: topicId,
       feed_url: feed.feed_url,
-      status: "pending",
+      status: "active",
       metadata: {
         auto_discovered: true,
         source: feed.source,
@@ -236,7 +236,7 @@ export async function discoverFeedsForSlug({
   model,
   perplexityKey,
   perplexityModel = "sonar",
-  limitPerSlug = 2,
+  limitPerSlug = 10,
   dryRun = false,
   fetchImpl = fetch,
   clearGapOnSuccess = true,
