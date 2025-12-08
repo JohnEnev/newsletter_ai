@@ -15,6 +15,43 @@ function parseNumber(value: string | null, fallback: number, { min, max }: { min
   return Math.min(Math.max(parsed, min), max);
 }
 
+function buildInternalBaseUrl() {
+  const envBase = process.env.APP_BASE_URL?.trim();
+  if (envBase) return envBase.replace(/\/$/, "");
+  const vercel = process.env.VERCEL_URL?.trim();
+  if (vercel) return `https://${vercel.replace(/^https?:\/\//, "")}`;
+  return "http://localhost:3000";
+}
+
+async function triggerArticleSync(feeds: string[]) {
+  const uniqueFeeds = Array.from(new Set(feeds.filter((value) => value && value.trim().length > 0)));
+  if (uniqueFeeds.length === 0) return null;
+
+  const secret = process.env.ARTICLES_SYNC_SECRET || process.env.CRON_SECRET || process.env.DIGEST_RUN_SECRET || "";
+  if (!secret) return null;
+
+  const base = buildInternalBaseUrl();
+  const syncUrl = new URL(`${base}/api/articles/sync`);
+  syncUrl.searchParams.set("noDefault", "1");
+  for (const feed of uniqueFeeds) {
+    syncUrl.searchParams.append("feed", feed);
+  }
+
+  try {
+    const res = await fetch(syncUrl.toString(), {
+      method: "GET",
+      headers: { Authorization: `Bearer ${secret}` },
+    });
+    const data = await res.json().catch(() => null);
+    return { ok: res.ok, status: res.status, data };
+  } catch (err) {
+    if (process.env.NODE_ENV !== "production") {
+      console.warn("[feeds] Auto article sync failed", err instanceof Error ? err.message : err);
+    }
+    return null;
+  }
+}
+
 async function verifyCronSignature(request: Request, secret: string, allowUnsigned: boolean) {
   const cronHeader = request.headers.get("x-vercel-cron");
   const vercelId = request.headers.get("x-vercel-id");
@@ -66,7 +103,7 @@ export async function GET(request: Request) {
   }
 
   const dryRun = url.searchParams.get("dry") === "1";
-  const limitPerSlug = parseNumber(url.searchParams.get("feeds"), 2, { min: 1, max: 5 });
+  const limitPerSlug = parseNumber(url.searchParams.get("feeds"), 10, { min: 1, max: 12 });
   const maxTopics = parseNumber(url.searchParams.get("topics"), 4, { min: 1, max: 8 });
   const lookbackHours = parseNumber(url.searchParams.get("hours"), 168, { min: 1, max: 720 });
   const fromQueue = url.searchParams.get("queue") !== "0";
@@ -130,6 +167,11 @@ export async function GET(request: Request) {
   }
 
   const totalAdded = results.reduce((sum, entry) => sum + entry.added.length, 0);
+  let syncResult: { ok: boolean; status: number; data: unknown } | null = null;
+  if (!dryRun && totalAdded > 0) {
+    const feedsToSync = results.flatMap((entry) => entry.added || []);
+    syncResult = await triggerArticleSync(feedsToSync);
+  }
 
   return NextResponse.json({
     ok: true,
@@ -137,5 +179,6 @@ export async function GET(request: Request) {
     topics: targets,
     added: totalAdded,
     results,
+    sync: syncResult,
   });
 }

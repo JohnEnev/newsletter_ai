@@ -27,6 +27,57 @@ function titleize(value: string) {
     .join(" ");
 }
 
+function levenshtein(a: string, b: string) {
+  if (a === b) return 0;
+  const lenA = a.length;
+  const lenB = b.length;
+  if (lenA === 0) return lenB;
+  if (lenB === 0) return lenA;
+
+  const dp = Array.from({ length: lenA + 1 }, (_, i) => i);
+  for (let j = 1; j <= lenB; j++) {
+    let prev = dp[0];
+    dp[0] = j;
+    for (let i = 1; i <= lenA; i++) {
+      const temp = dp[i];
+      if (a[i - 1] === b[j - 1]) {
+        dp[i] = prev;
+      } else {
+        dp[i] = Math.min(prev, dp[i - 1], dp[i]) + 1;
+      }
+      prev = temp;
+    }
+  }
+  return dp[lenA];
+}
+
+function similarityScore(a: string, b: string) {
+  const maxLen = Math.max(a.length, b.length);
+  if (maxLen === 0) return 1;
+  const distance = levenshtein(a, b);
+  return 1 - distance / maxLen;
+}
+
+type ExistingTopic = { slug: string; display_name: string | null };
+
+function findClosestTopicSlug(candidate: string, existing: ExistingTopic[]) {
+  const target = slugify(candidate);
+  if (!target) return null;
+  let best: { slug: string; display_name: string | null; score: number } | null = null;
+  for (const topic of existing) {
+    const baseSlug = topic.slug || "";
+    const displaySlug = slugify(topic.display_name || "") || baseSlug;
+    const score = Math.max(similarityScore(target, baseSlug), similarityScore(target, displaySlug));
+    if (!best || score > best.score) {
+      best = { slug: baseSlug, display_name: topic.display_name, score };
+    }
+  }
+  if (best && best.score >= 0.72) {
+    return { slug: best.slug, display_name: best.display_name || titleize(best.slug) };
+  }
+  return null;
+}
+
 function safeParseTopics(raw: string | null | undefined): TopicSuggestion[] {
   if (!raw) return [];
   try {
@@ -108,6 +159,12 @@ export async function syncUserTopics({
   if (!userId) return;
   const rawTokens = extractInterestTokens(interests, { maxTokens: 8 });
 
+  const { data: existingTopics } = await supabase
+    .from("article_topics")
+    .select("slug, display_name")
+    .limit(5000);
+  const existingList: ExistingTopic[] = Array.isArray(existingTopics) ? existingTopics : [];
+
   const suggestions = await callOpenAIForTopics({
     interests,
     timeline,
@@ -138,7 +195,27 @@ export async function syncUserTopics({
     return;
   }
 
-  const slugs = topics.map((topic) => topic.slug);
+  const normalizedTopics = topics.map((topic) => {
+    const closest = findClosestTopicSlug(topic.slug, existingList);
+    if (closest) {
+      return {
+        ...topic,
+        slug: closest.slug,
+        display_name: closest.display_name,
+      };
+    }
+    return topic;
+  });
+
+  const deduped = Array.from(
+    normalizedTopics.reduce((acc, topic) => {
+      if (!topic.slug) return acc;
+      if (!acc.has(topic.slug)) acc.set(topic.slug, topic);
+      return acc;
+    }, new Map<string, TopicSuggestion>()),
+  ).map(([, value]) => value);
+
+  const slugs = deduped.map((topic) => topic.slug);
   const existingSlugs = new Set<string>();
   if (slugs.length > 0) {
     const { data: existingRows } = await supabase
@@ -152,7 +229,7 @@ export async function syncUserTopics({
     }
   }
 
-  const upsertPayload = topics.map((topic) => ({
+  const upsertPayload = deduped.map((topic) => ({
     slug: topic.slug,
     display_name: topic.display_name || titleize(topic.slug),
   }));
@@ -168,7 +245,7 @@ export async function syncUserTopics({
   }
 
   const topicMap = new Map(topicRows?.map((row) => [row.slug, row.id]));
-  const linkValues = topics
+  const linkValues = deduped
     .map((topic, index) => {
       const id = topicMap.get(topic.slug);
       if (!id) return null;

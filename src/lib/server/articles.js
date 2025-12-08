@@ -6,14 +6,14 @@ import OpenAI from "openai";
 
 const DEFAULT_FEEDS = [
   "https://hnrss.org/frontpage",
-  "https://rss.nytimes.com/services/xml/rss/nyt/Technology.xml",
-  "https://www.producthunt.com/feed",
   "https://www.theverge.com/rss/index.xml",
-  "https://www.technologyreview.com/feed/",
-  "https://feeds.feedburner.com/TechCrunch/startups",
+  "https://www.wired.com/feed/rss",
+  "https://www.techmeme.com/feed.xml",
+  "https://feeds.arstechnica.com/arstechnica/technology-lab",
   "https://feeds.bbci.co.uk/news/world/rss.xml",
-  "https://foreignpolicy.com/feed/",
-  "https://www.historytoday.com/feed/rss.xml",
+  "https://www.aljazeera.com/xml/rss/all.xml",
+  "https://www.smithsonianmag.com/history/feed/",
+  "https://www.nature.com/subjects/biology.rss",
 ];
 
 const STOP_WORDS = new Set([
@@ -108,6 +108,13 @@ const PAYWALL_HTML_KEYWORDS = (process.env.PAYWALL_HTML_KEYWORDS
   .split(/[,|]+/)
   .map((entry) => entry.trim().toLowerCase())
   .filter(Boolean);
+
+const SOURCE_HOST_DENYLIST = new Set(
+  (process.env.SOURCE_HOST_DENYLIST || "producthunt.com,producthunt.co")
+    .split(/[,\s]+/)
+    .map((entry) => entry.trim().toLowerCase())
+    .filter(Boolean),
+);
 
 const PAYWALL_PROBE_TIMEOUT_MS = Number.parseInt(process.env.PAYWALL_PROBE_TIMEOUT_MS || "2500", 10);
 
@@ -246,7 +253,7 @@ async function loadTopicFeedMap() {
     const { data: feedRows, error: feedError } = await client
       .from("article_topic_feeds")
       .select("feed_url, topic_id, status")
-      .eq("status", "active");
+      .in("status", ["active", "pending"]);
     if (feedError || !Array.isArray(feedRows)) {
       if (feedError && process.env.NODE_ENV !== "production") {
         console.warn("[warn] Failed to load article_topic_feeds", feedError.message);
@@ -630,6 +637,14 @@ async function fetchRss({ url: feedUrl, topics = [] }) {
             }
           }
         })();
+
+        const bareHost = hostname.replace(/^www\./, "").toLowerCase();
+        if (SOURCE_HOST_DENYLIST.has(bareHost)) {
+          if (process.env.NODE_ENV !== "production") {
+            console.log(`[skip] Source host denied (${bareHost}): ${url}`);
+          }
+          return null;
+        }
 
         if (articleLooksPaywalled({ url, tags, title })) {
           if (process.env.NODE_ENV !== "production") {
