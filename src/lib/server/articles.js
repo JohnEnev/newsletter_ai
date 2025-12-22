@@ -12,8 +12,8 @@ const DEFAULT_FEEDS = [
   "https://feeds.arstechnica.com/arstechnica/technology-lab",
   "https://feeds.bbci.co.uk/news/world/rss.xml",
   "https://www.aljazeera.com/xml/rss/all.xml",
-  "https://www.smithsonianmag.com/history/feed/",
-  "https://www.nature.com/subjects/biology.rss",
+  "https://www.smithsonianmag.com/rss/history/",
+  "https://www.sciencedaily.com/rss/plants_animals/biology.xml",
 ];
 
 const STOP_WORDS = new Set([
@@ -583,8 +583,8 @@ function parseFeedEntries(xml, feedUrl) {
 async function fetchRss({ url: feedUrl, topics = [] }) {
   const topicTags = Array.isArray(topics)
     ? topics
-        .map((topic) => String(topic ?? "").trim().toLowerCase())
-        .filter((value) => value.length > 0)
+      .map((topic) => String(topic ?? "").trim().toLowerCase())
+      .filter((value) => value.length > 0)
     : [];
   try {
     const res = await fetch(feedUrl, {
@@ -691,15 +691,15 @@ function loadLocalArticles(sourceFile) {
     const txt = fs.readFileSync(candidate, "utf-8");
     const parsed = JSON.parse(txt);
     const list = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.items) ? parsed.items : [];
-        const hydrated = list
-          .map((item) => {
-            const title = String(item.title ?? "").trim();
-            const url = String(item.url ?? "").trim();
-            if (!title || !url) return null;
-            const summary = summarise(item.summary || item.description || "");
-            const fallbackTags = Array.isArray(item.tags) ? item.tags.map((t) => String(t)) : [];
-            const generated = keywordTags(title, summary ?? "");
-            const tags = Array.from(new Set([...fallbackTags.map((t) => t.toLowerCase()), ...generated]));
+    const hydrated = list
+      .map((item) => {
+        const title = String(item.title ?? "").trim();
+        const url = String(item.url ?? "").trim();
+        if (!title || !url) return null;
+        const summary = summarise(item.summary || item.description || "");
+        const fallbackTags = Array.isArray(item.tags) ? item.tags.map((t) => String(t)) : [];
+        const generated = keywordTags(title, summary ?? "");
+        const tags = Array.from(new Set([...fallbackTags.map((t) => t.toLowerCase()), ...generated]));
         const source = (() => {
           try {
             return new URL(url).hostname;
@@ -815,8 +815,8 @@ export async function ingestArticles({ supabase, articles, dryRun = false }) {
 
       const tags = Array.isArray(article.tags)
         ? article.tags
-            .map((tag) => String(tag ?? "").trim().toLowerCase())
-            .filter((tag) => tag.length > 0)
+          .map((tag) => String(tag ?? "").trim().toLowerCase())
+          .filter((tag) => tag.length > 0)
         : [];
 
       let hookQuestion = null;
