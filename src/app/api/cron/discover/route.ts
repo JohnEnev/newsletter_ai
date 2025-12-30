@@ -30,7 +30,7 @@ export async function GET(request: Request) {
   const admin = createClient(supabaseUrl, serviceRoleKey, {
     auth: { autoRefreshToken: false, persistSession: false },
   });
-  
+
   const openai = openaiApiKey ? new OpenAI({ apiKey: openaiApiKey }) : undefined;
 
   // Logic from discover-feeds.mjs
@@ -47,31 +47,37 @@ export async function GET(request: Request) {
     if (slugParam) {
       targets = [slugParam];
     } else {
-       // Load gaps
-       targets = await loadGapSlugs(admin, { lookbackHours: 168, limit: 5 });
-    }
+      // Load all topics to perform a nightly sweep
+      const { data: allTopics } = await admin.from("article_topics").select("slug");
+      const allSlugs = (allTopics || []).map((t) => t.slug).filter(Boolean);
 
-    if (targets.length === 0) {
-      return NextResponse.json({ message: 'No targets to process' });
-    }
+      // Shuffle and pick up to 10 to process per run (to avoid Vercel timeouts)
+      // This promotes "eventual consistency" where all topics get refreshed over a few days
+      // regardless of whether they have "gaps".
+      const shuffled = allSlugs.sort(() => 0.5 - Math.random());
+      targets = shuffled.slice(0, 10);
 
-    const results = [];
-    for (const slug of targets) {
-      const result = await discoverFeedsForSlug({
-        slug,
+      // Note: The prompt inside feedDiscovery-core is now tuned for "Worldwide, No Paywall"
+      // and Perplexity is the exclusive provider if configured.
+
+      if (targets.length === 0) {
+        // Only if NO topics exist at all, try gaps as a fallback, or just exit
+        targets = await loadGapSlugs(admin, { lookbackHours: 168, limit: 5 });
+      }
+      slug,
         admin,
         openai,
         model: discoveryModel,
-        perplexityKey: perplexityApiKey,
-        perplexityModel,
-        limitPerSlug: 2, // Keep it conservative for cron
+          perplexityKey: perplexityApiKey,
+            perplexityModel,
+            limitPerSlug: 2, // Keep it conservative for cron
       });
-      results.push(result);
-    }
+    results.push(result);
+  }
 
     return NextResponse.json({ success: true, results });
-  } catch (error) {
-    console.error('Discovery cron failed:', error);
-    return NextResponse.json({ error: String(error) }, { status: 500 });
-  }
+} catch (error) {
+  console.error('Discovery cron failed:', error);
+  return NextResponse.json({ error: String(error) }, { status: 500 });
+}
 }

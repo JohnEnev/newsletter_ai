@@ -85,8 +85,12 @@ async function askOpenAIForFeeds(slug, openai, model) {
 async function askPerplexityForFeeds(slug, apiKey, model = "sonar", fetchImpl = fetch) {
   if (!apiKey || !fetchImpl) return { feeds: [], provider: "perplexity" };
   const prompt =
-    `Suggest up to 10 high-quality RSS or Atom feeds focused on ${slug}. ` +
-    `Respond ONLY with a JSON array where each item has feed_url, source, and reason fields.`;
+    `Perform a broad, worldwide search for the best RSS or Atom feeds related to "${slug}". ` +
+    `Focus on high-quality, authoritative sources, including independent blogs, niche experts, and reputable journalism. ` +
+    `STRICTLY AVOID paywalled sites (like Bloomberg, WSJ, FT, etc.) and low-quality aggregators. ` +
+    `Rank the feeds by quality and "interestingness". ` +
+    `Respond ONLY with a valid JSON array where each object has "feed_url", "source" (name), and "reason" (why it's good). ` +
+    `Return up to 15 suggestions.`;
   const response = await fetchImpl("https://api.perplexity.ai/chat/completions", {
     method: "POST",
     headers: {
@@ -128,8 +132,8 @@ async function suggestFeeds({ slug, openai, openaiModel, perplexityKey, perplexi
       name: "perplexity",
       fn: () => askPerplexityForFeeds(slug, perplexityKey, perplexityModel, fetchImpl),
     });
-  }
-  if (openai) {
+  } else if (openai) {
+    // Only fall back to OpenAI if Perplexity is not configured
     providers.push({ name: "openai", fn: () => askOpenAIForFeeds(slug, openai, openaiModel) });
   }
   if (providers.length === 0) return { feeds: [], provider: null };
