@@ -60,24 +60,29 @@ export async function GET(request: Request) {
       // Note: The prompt inside feedDiscovery-core is now tuned for "Worldwide, No Paywall"
       // and Perplexity is the exclusive provider if configured.
 
-      if (targets.length === 0) {
-        // Only if NO topics exist at all, try gaps as a fallback, or just exit
-        targets = await loadGapSlugs(admin, { lookbackHours: 168, limit: 5 });
-      }
-      slug,
+    }
+
+    if (targets.length === 0) {
+      return NextResponse.json({ message: 'No targets to process' });
+    }
+
+    const results = [];
+    for (const slug of targets) {
+      const result = await discoverFeedsForSlug({
+        slug,
         admin,
         openai,
         model: discoveryModel,
-          perplexityKey: perplexityApiKey,
-            perplexityModel,
-            limitPerSlug: 2, // Keep it conservative for cron
+        perplexityKey: perplexityApiKey,
+        perplexityModel,
+        limitPerSlug: 2, // Keep it conservative for cron
       });
-    results.push(result);
-  }
+      results.push(result);
+    }
 
     return NextResponse.json({ success: true, results });
-} catch (error) {
-  console.error('Discovery cron failed:', error);
-  return NextResponse.json({ error: String(error) }, { status: 500 });
-}
+  } catch (error) {
+    console.error('Discovery cron failed:', error);
+    return NextResponse.json({ error: String(error) }, { status: 500 });
+  }
 }
