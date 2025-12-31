@@ -8,7 +8,7 @@ const DEFAULT_FEEDS = [
   "https://hnrss.org/frontpage",
   "https://www.theverge.com/rss/index.xml",
   "https://www.wired.com/feed/rss",
-  "https://www.techmeme.com/feed.xml",
+
   "https://feeds.arstechnica.com/arstechnica/technology-lab",
   "https://feeds.bbci.co.uk/news/world/rss.xml",
   "https://www.aljazeera.com/xml/rss/all.xml",
@@ -89,7 +89,7 @@ const PAYWALL_URL_HINTS = ["/paywall", "/premium", "/subscribe", "?share=1"];
 
 const PAYWALL_DOMAINS = new Set(
   (process.env.PAYWALL_DOMAIN_DENYLIST
-    || "wsj.com,economist.com,barrons.com,theinformation.com,ft.com,foreignpolicy.com,foreignaffairs.com,technologyreview.com,newyorker.com,nytimes.com")
+    || "wsj.com,economist.com,barrons.com,theinformation.com,ft.com,foreignpolicy.com,foreignaffairs.com,technologyreview.com,newyorker.com,nytimes.com,bloomberg.com")
     .split(/[,\s]+/)
     .map((entry) => entry.trim().toLowerCase())
     .filter(Boolean),
